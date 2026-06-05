@@ -10,12 +10,12 @@
   <header class="topbar">
     <div>
       <h1>报价计算器</h1>
-      <p id="saveStatus">已准备</p>
+      <p id="saveStatus">已就绪</p>
     </div>
     <nav class="page-tabs" aria-label="页面">
       <button class="tab active" type="button" data-page="manager">案例报价</button>
       <button class="tab" type="button" data-page="editor">报价编辑</button>
-      <button class="tab" type="button" data-page="prices">价格库编辑</button>
+      <button class="tab" type="button" data-page="prices">价格库</button>
     </nav>
     <div class="top-actions">
       <button id="saveAllBtn" type="button">保存</button>
@@ -34,7 +34,7 @@
           <div class="section-title">
             <div>
               <h2>案例报价管理</h2>
-              <p class="muted">每一条都是一个完整案例报价，客户信息在报价编辑里填写。</p>
+              <p class="muted">每一条都是一份完整报价，客户信息在报价编辑里填写。</p>
             </div>
             <button id="addQuoteBtn" type="button">新建案例报价</button>
           </div>
@@ -134,25 +134,43 @@
     </section>
 
     <section class="page" id="pricesPage">
-      <section class="panel prices price-page-panel">
-        <div class="section-title">
-          <div>
-            <h2>价格库编辑</h2>
-            <p class="muted">这里维护价格条目；报价编辑里添加的是工程项目。</p>
+      <div class="prices-page-stack">
+        <div class="category-library price-page-panel" id="categoryLibraryPanel">
+          <div class="section-title category-section-title">
+            <div>
+              <h2>分类库</h2>
+              <p class="muted">分类改名后，关联的价格条目会一起更新。</p>
+            </div>
+            <div class="button-row">
+              <button id="toggleCategoryLibraryBtn" type="button" class="ghost">收起分类库</button>
+              <button id="addCategoryBtn" type="button" class="ghost">添加分类</button>
+            </div>
           </div>
-          <div class="price-version-tools">
-            <select id="libraryPriceVersion"></select>
-            <button id="cloneVersionBtn" type="button">复制版本</button>
-            <button id="renameVersionBtn" type="button" class="ghost">改名</button>
-            <button id="deleteVersionBtn" type="button" class="danger">删除版本</button>
+          <div class="category-list" id="categoryList"></div>
+        </div>
+
+        <section class="panel prices price-page-panel">
+          <div class="section-title">
+            <div>
+              <h2>价格库</h2>
+              <p class="muted">这里维护价格条目；报价编辑里添加的是工程项目。</p>
+            </div>
+            <div class="price-version-tools">
+              <select id="libraryPriceVersion"></select>
+              <button id="cloneVersionBtn" type="button">复制版本</button>
+              <button id="renameVersionBtn" type="button" class="ghost">改名</button>
+              <button id="deleteVersionBtn" type="button" class="danger">删除版本</button>
+            </div>
           </div>
-        </div>
-        <div class="price-tools wide">
-          <span id="priceCount">0 条价格条目</span>
-          <input id="priceSearch" type="search" placeholder="搜索价格条目、分类或说明">
-        </div>
-        <div class="price-list" id="priceList"></div>
-      </section>
+
+          <div class="price-tools wide">
+            <span id="priceCount">0 条价格条目</span>
+            <input id="priceSearch" type="search" placeholder="搜索价格条目、分类或说明">
+            <button id="addPriceItemBtn" type="button">添加条目</button>
+          </div>
+          <div class="price-list" id="priceList"></div>
+        </section>
+      </div>
     </section>
   </main>
 

@@ -63,12 +63,19 @@ function initializeDatabase() {
       name TEXT NOT NULL,
       created_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS price_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    );
     CREATE TABLE IF NOT EXISTS price_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       version_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       name TEXT NOT NULL,
       unit TEXT,
       category TEXT,
+      category_id TEXT,
       description TEXT,
       material REAL DEFAULT 0,
       auxiliary REAL DEFAULT 0,
@@ -80,7 +87,8 @@ function initializeDatabase() {
       cost_labor REAL DEFAULT 0,
       unit_price REAL DEFAULT 0,
       cost_unit_price REAL DEFAULT 0,
-      FOREIGN KEY (version_id) REFERENCES price_versions(id) ON DELETE CASCADE
+      FOREIGN KEY (version_id) REFERENCES price_versions(id) ON DELETE CASCADE,
+      FOREIGN KEY (category_id) REFERENCES price_categories(id)
     );
     CREATE INDEX IF NOT EXISTS idx_price_items_version ON price_items(version_id);
     CREATE TABLE IF NOT EXISTS customers (
@@ -126,6 +134,11 @@ function initializeDatabase() {
   `);
   ensureColumn("quotes", "client_phone", "TEXT");
   ensureColumn("quotes", "client_address", "TEXT");
+  ensureColumn("price_items", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("price_items", "category_id", "TEXT");
+  ensureColumn("price_categories", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_price_items_category ON price_items(category_id)");
+  migratePriceCategories();
 }
 
 function ensureColumn(table, column, type) {
@@ -133,6 +146,24 @@ function ensureColumn(table, column, type) {
   if (!columns.includes(column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
+}
+
+function migratePriceCategories() {
+  const categoryRows = db.prepare(`
+    SELECT DISTINCT TRIM(category) AS name
+    FROM price_items
+    WHERE TRIM(COALESCE(category, '')) <> ''
+    ORDER BY name COLLATE NOCASE
+  `).all();
+  const insertCategory = db.prepare("INSERT OR IGNORE INTO price_categories (id, name, sort_order) VALUES (?, ?, ?)");
+  const findCategory = db.prepare("SELECT id FROM price_categories WHERE name = ?");
+  const updateItems = db.prepare("UPDATE price_items SET category_id = ? WHERE TRIM(COALESCE(category, '')) = ?");
+
+  categoryRows.forEach(({ name }, index) => {
+    insertCategory.run(makeId("category"), name, index);
+    const category = findCategory.get(name);
+    if (category?.id) updateItems.run(category.id, name);
+  });
 }
 
 async function migrateLegacyJsonIfNeeded() {
@@ -146,6 +177,7 @@ async function migrateLegacyJsonIfNeeded() {
     exportedAt: new Date().toISOString(),
     data: {
       versions: initial.versions,
+      categories: deriveCategoriesFromVersions(initial.versions),
       activeVersionId: initial.versions[0]?.id || "",
       activePage: "manager",
       customers: [],
@@ -166,8 +198,10 @@ async function handlePostData(req, res) {
 function loadPortableState() {
   const data = {
     versions: loadPriceVersions(),
+    categories: loadPriceCategories(),
     activeVersionId: getAppState("activeVersionId") || "",
     activePage: getAppState("activePage") || "manager",
+    categoryLibraryCollapsed: getAppState("categoryLibraryCollapsed") !== "false",
     customers: db.prepare("SELECT id, name, contact, phone, address FROM customers ORDER BY rowid").all(),
     quotes: loadQuotes(),
     activeCustomerId: getAppState("activeCustomerId") || "",
@@ -186,15 +220,24 @@ function loadPriceVersions() {
   const versions = db.prepare("SELECT id, name, created_at AS createdAt FROM price_versions ORDER BY rowid").all();
   const items = db.prepare(`
     SELECT
-      name, unit, material, waste_rate AS wasteRate, auxiliary, labor, category, description,
+      price_items.sort_order AS sortOrder,
+      price_items.name, unit, material, waste_rate AS wasteRate, auxiliary, labor,
+      price_items.category_id AS categoryId,
+      COALESCE(price_categories.name, price_items.category, '') AS category,
+      description,
       cost_material AS costMaterial, cost_waste_rate AS costWasteRate,
       cost_auxiliary AS costAuxiliary, cost_labor AS costLabor,
       unit_price AS unitPrice, cost_unit_price AS costUnitPrice
     FROM price_items
+    LEFT JOIN price_categories ON price_categories.id = price_items.category_id
     WHERE version_id = ?
-    ORDER BY id
+    ORDER BY COALESCE(price_items.sort_order, price_items.id), price_items.id
   `);
   return versions.map((version) => ({ ...version, items: items.all(version.id) }));
+}
+
+function loadPriceCategories() {
+  return db.prepare("SELECT id, name, sort_order AS sortOrder FROM price_categories ORDER BY sort_order, rowid").all();
 }
 
 function loadQuotes() {
@@ -225,6 +268,7 @@ function savePortableState(portable) {
   if (!data || !Array.isArray(data.versions) || !Array.isArray(data.customers) || !Array.isArray(data.quotes)) {
     throw new Error("Invalid quote data");
   }
+  const categories = Array.isArray(data.categories) ? data.categories : deriveCategoriesFromVersions(data.versions);
 
   db.exec("BEGIN");
   try {
@@ -233,14 +277,17 @@ function savePortableState(portable) {
       DELETE FROM quotes;
       DELETE FROM customers;
       DELETE FROM price_items;
+      DELETE FROM price_categories;
       DELETE FROM price_versions;
       DELETE FROM app_state;
     `);
     setAppState("activeVersionId", data.activeVersionId || "");
     setAppState("activePage", data.activePage || "manager");
+    setAppState("categoryLibraryCollapsed", data.categoryLibraryCollapsed ?? true);
     setAppState("activeCustomerId", data.activeCustomerId || "");
     setAppState("activeQuoteId", data.activeQuoteId || "");
-    insertPriceVersions(data.versions);
+    insertPriceCategories(categories);
+    insertPriceVersions(data.versions, categories);
     insertCustomers(data.customers);
     insertQuotes(data.quotes);
     db.exec("COMMIT");
@@ -250,22 +297,37 @@ function savePortableState(portable) {
   }
 }
 
-function insertPriceVersions(versions) {
+function insertPriceCategories(categories) {
+  const insertCategory = db.prepare("INSERT INTO price_categories (id, name, sort_order) VALUES (?, ?, ?)");
+  categories.forEach((category, index) => {
+    const name = String(category?.name || "").trim();
+    if (!name) return;
+    insertCategory.run(category.id || makeId("category"), name, Number.isFinite(Number(category?.sortOrder)) ? Number(category.sortOrder) : index);
+  });
+}
+
+function insertPriceVersions(versions, categories) {
   const insertVersion = db.prepare("INSERT INTO price_versions (id, name, created_at) VALUES (?, ?, ?)");
   const insertItem = db.prepare(`
     INSERT INTO price_items (
-      version_id, name, unit, category, description, material, auxiliary, waste_rate, labor,
+      version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
       cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
+  const categoryById = new Map((categories || []).map((category) => [category.id, category.name]));
+  const categoryByName = new Map((categories || []).map((category) => [String(category.name || "").trim(), category.id]));
   versions.forEach((version) => {
     insertVersion.run(version.id, version.name || "未命名价格版本", version.createdAt || "");
-    (version.items || []).forEach((item) => {
+    (version.items || []).forEach((item, index) => {
+      const categoryName = String(item.category || "").trim();
+      const categoryId = item.categoryId || (categoryName ? categoryByName.get(categoryName) : "") || null;
       insertItem.run(
         version.id,
+        Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index,
         item.name || "",
         item.unit || "",
-        item.category || "",
+        categoryName || categoryById.get(categoryId) || "",
+        categoryId,
         item.description || "",
         toNumber(item.material),
         toNumber(item.auxiliary),
@@ -280,6 +342,18 @@ function insertPriceVersions(versions) {
       );
     });
   });
+}
+
+function deriveCategoriesFromVersions(versions) {
+  const categories = new Map();
+  (versions || []).forEach((version) => {
+    (version.items || []).forEach((item) => {
+      const name = String(item.category || "").trim();
+      if (!name || categories.has(name)) return;
+      categories.set(name, { id: makeId("category"), name, sortOrder: categories.size });
+    });
+  });
+  return [...categories.values()];
 }
 
 function insertCustomers(customers) {
@@ -396,4 +470,8 @@ function sendText(res, status, text) {
 function toNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function makeId(prefix) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }

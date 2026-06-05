@@ -1,10 +1,12 @@
-const STORAGE_KEY = "quote-tool-state-v2";
+﻿const STORAGE_KEY = "quote-tool-state-v2";
 const OLD_STORAGE_KEY = "quote-tool-state-v1";
 
 const state = {
   versions: [],
+  categories: [],
   activeVersionId: "",
   activePage: "manager",
+  categoryLibraryCollapsed: true,
   customers: [],
   quotes: [],
   activeCustomerId: "",
@@ -31,7 +33,8 @@ function bindElements() {
     "projectName", "clientName", "quoteDate", "priceVersion", "libraryPriceVersion",
     "cloneVersionBtn", "renameVersionBtn", "managementRate", "taxRate",
     "subtotalText", "managementText", "taxText", "grandTotalText", "addLineBtn", "quoteLines",
-    "priceSearch", "priceCount", "priceList", "previewTitle", "previewMeta", "previewTotal",
+    "priceSearch", "priceCount", "priceList", "addPriceItemBtn", "previewTitle", "previewMeta", "previewTotal",
+    "categoryList", "addCategoryBtn", "toggleCategoryLibraryBtn", "categoryLibraryPanel",
     "previewRows", "previewSubtotal", "previewManagement", "previewTax", "previewGrand"
   ].forEach((id) => {
     els[id] = document.getElementById(id);
@@ -109,6 +112,8 @@ function createStarterData() {
 
 function normalizeState() {
   state.versions = state.versions?.length ? state.versions : [];
+  state.categories = normalizeCategories([...(state.categories || []), ...deriveCategoriesFromVersions(state.versions)]);
+  state.versions = state.versions.map((version) => normalizeVersion(version));
   state.activeVersionId = state.activeVersionId || state.versions[0]?.id || "";
   state.customers = (state.customers || []).map(normalizeCustomer);
   state.quotes = (state.quotes || []).map(normalizeQuote);
@@ -123,6 +128,53 @@ function normalizeState() {
   state.activeCustomerId = state.activeCustomerId || state.customers[0].id;
   state.activeQuoteId = state.activeQuoteId || state.quotes[0].id;
   state.activePage = state.activePage || "manager";
+  state.categoryLibraryCollapsed = state.categoryLibraryCollapsed ?? true;
+}
+
+function normalizeCategories(categories) {
+  const seen = new Set();
+  return (categories || []).reduce((list, category) => {
+    const name = String(category?.name || "").trim();
+    if (!name || seen.has(name)) return list;
+    seen.add(name);
+    list.push({
+      id: category?.id || makeId("category"),
+      name,
+      sortOrder: Number.isFinite(Number(category?.sortOrder)) ? Number(category.sortOrder) : list.length
+    });
+    return list;
+  }, []).sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+function deriveCategoriesFromVersions(versions) {
+  const categories = [];
+  (versions || []).forEach((version) => {
+    (version.items || []).forEach((item) => {
+      const name = String(item?.category || "").trim();
+      if (!name) return;
+      categories.push({ name, sortOrder: categories.length });
+    });
+  });
+  return categories;
+}
+
+function normalizeVersion(version) {
+  return {
+    ...version,
+    items: (version.items || []).map((item, index) => normalizePriceItem(item, index))
+  };
+}
+
+function normalizePriceItem(item, index = 0) {
+  const categoryName = String(item?.category || "").trim();
+  const category = state.categories.find((entry) => entry.id === item?.categoryId)
+    || state.categories.find((entry) => entry.name === categoryName);
+  return {
+    ...item,
+    sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index,
+    categoryId: category?.id || "",
+    category: category?.name || categoryName
+  };
 }
 
 function normalizeCustomer(customer) {
@@ -172,6 +224,11 @@ function bindEvents() {
   els.cloneVersionBtn.addEventListener("click", cloneVersion);
   els.renameVersionBtn.addEventListener("click", renameVersion);
   els.addLineBtn.addEventListener("click", addLine);
+  if (els.addPriceItemBtn) els.addPriceItemBtn.addEventListener("click", addPriceItem);
+  if (els.addCategoryBtn) els.addCategoryBtn.addEventListener("click", addCategory);
+  if (els.toggleCategoryLibraryBtn) {
+    els.toggleCategoryLibraryBtn.addEventListener("click", toggleCategoryLibrary);
+  }
   els.priceSearch.addEventListener("input", renderPrices);
   els.priceVersion.addEventListener("change", () => setQuoteField("priceVersionId", els.priceVersion.value, true));
   els.libraryPriceVersion.addEventListener("change", () => {
@@ -221,12 +278,32 @@ function currentVersion() {
 }
 
 function currentItems() {
-  return currentVersion()?.items || [];
+  const items = (currentVersion()?.items || []).slice();
+  const categoryIndex = new Map(currentCategories().map((category, index) => [category.id, index]));
+  return items.sort((a, b) => {
+    const leftCategory = categoryIndex.has(a.categoryId) ? categoryIndex.get(a.categoryId) : Number.MAX_SAFE_INTEGER;
+    const rightCategory = categoryIndex.has(b.categoryId) ? categoryIndex.get(b.categoryId) : Number.MAX_SAFE_INTEGER;
+    if (leftCategory !== rightCategory) return leftCategory - rightCategory;
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+  });
+}
+
+function currentCategories() {
+  return (state.categories || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
 function findItem(name, versionId = currentVersion()?.id) {
   const version = state.versions.find((item) => item.id === versionId) || currentVersion();
   return version?.items.find((item) => item.name === name);
+}
+
+function findCategory(categoryId) {
+  return currentCategories().find((category) => category.id === categoryId);
+}
+
+function categoryNameForItem(item) {
+  return findCategory(item?.categoryId)?.name || String(item?.category || "").trim();
 }
 
 function makeLine(itemName = "", area = "", quantity = 0) {
@@ -248,9 +325,13 @@ function normalizeLine(line, versionId = currentVersion()?.id) {
   const priceItemName = line.priceItemName || line.itemName || "";
   const item = findItem(priceItemName, versionId);
   const hasSplitPrice = ["material", "auxiliary", "wasteRate", "labor"].some((key) => line[key] !== undefined && line[key] !== null);
+  const rawEngineeringName = line.engineeringName || line.itemName || "";
+  const fallbackEngineeringName = rawEngineeringName || (priceItemName ? displayEngineeringName(priceItemName) : "");
   return {
     id: line.id || makeId("line"),
-    engineeringName: line.engineeringName || line.itemName || priceItemName,
+    engineeringName: priceItemName && rawEngineeringName === displayEngineeringName(priceItemName)
+      ? priceItemName
+      : fallbackEngineeringName,
     priceItemName,
     area: line.area || "",
     quantity: toNumber(line.quantity),
@@ -348,19 +429,19 @@ function renderLines() {
     const item = findItem(line.priceItemName, quote.priceVersionId);
     const unit = item?.unit || "";
     const unitPrice = calculateLineUnitPrice(line);
+    const engineeringDisplayName = line.priceItemName && line.engineeringName === displayEngineeringName(line.priceItemName)
+      ? line.priceItemName
+      : line.engineeringName;
     const amount = toNumber(line.quantity) * unitPrice;
     return `
       <div class="line-item" data-line-id="${escapeHtml(line.id)}">
         <div class="line-field project-field">
           <label>工程项目</label>
           <div class="project-picker">
-            <input class="line-name" type="text" aria-label="工程项目" placeholder="输入工程项目，选择相似价格条目" value="${escapeHtml(line.engineeringName)}" autocomplete="off">
+            <input class="line-name" type="text" aria-label="工程项目" placeholder="输入工程项目，选择相似价格条目" value="${escapeHtml(engineeringDisplayName)}" autocomplete="off">
+            <button class="edit-price-item ghost small" type="button" ${line.priceItemName ? "" : "disabled"}>编辑</button>
             <div class="suggestions"></div>
           </div>
-        </div>
-        <div class="line-field price-item-field">
-          <label>匹配价格条目</label>
-          <button class="matched-price-item ${line.priceItemName ? "clickable" : ""}" type="button" data-item-name="${escapeHtml(line.priceItemName || "")}">${escapeHtml(line.priceItemName || "???")}</button>
         </div>
         <div class="line-field area-field">
           <label>区域</label>
@@ -370,6 +451,10 @@ function renderLines() {
           <label>工程量</label>
           <input class="line-qty" type="number" min="0" step="0.01" aria-label="工程量" placeholder="数量" value="${line.quantity}">
         </div>
+        <div class="line-field unit-field">
+          <label>单位</label>
+          <div class="line-unit">${escapeHtml(unit)}</div>
+        </div>
         <div class="line-field price-field">
           <label>综合单价</label>
           <div class="readonly-price">${formatMoney(unitPrice)}</div>
@@ -378,9 +463,10 @@ function renderLines() {
           <label>金额</label>
           <div class="amount">${formatMoney(amount)}</div>
         </div>
-        <button class="remove-btn" type="button" aria-label="删除">×</button>
-        <textarea class="line-note" aria-label="说明" placeholder="说明">${escapeHtml(line.note)}</textarea>
-        <div class="line-unit">${escapeHtml(unit)}</div>
+        <div class="line-field action-field">
+          <label class="action-label" aria-hidden="true">&nbsp;</label>
+          <button class="remove-btn" type="button" aria-label="删除">×</button>
+        </div>
       </div>
     `;
   }).join("");
@@ -406,18 +492,13 @@ function renderLines() {
     node.querySelector(".line-qty").addEventListener("input", (event) => {
       line.quantity = toNumber(event.target.value);
       saveState("已自动保存");
-      renderLines();
+      const amountNode = node.querySelector(".amount");
+      if (amountNode) amountNode.textContent = formatMoney(toNumber(line.quantity) * calculateLineUnitPrice(line));
       renderTotalsAndPreview();
     });
-    node.querySelector(".line-note").addEventListener("input", (event) => {
-      line.note = event.target.value;
-      saveState("?????");
-      renderTotalsAndPreview();
-    });
-    node.querySelector(".matched-price-item").addEventListener("click", (event) => {
-      const itemName = event.currentTarget.dataset.itemName;
-      if (!itemName) return;
-      openPriceItemEditor(itemName, quote.priceVersionId);
+    node.querySelector(".edit-price-item").addEventListener("click", () => {
+      if (!line.priceItemName) return;
+      openPriceItemEditor(line.priceItemName, quote.priceVersionId);
     });
     node.querySelector(".remove-btn").addEventListener("click", () => {
       quote.lines = quote.lines.filter((entry) => entry.id !== line.id);
@@ -432,7 +513,11 @@ function renderSuggestions(container, line, query) {
   const exactItem = cleaned ? findItem(cleaned) : null;
   const matches = findSimilarItems(cleaned).slice(0, 5);
   const comparableItems = cleaned ? findComparableItems(cleaned, 5) : [];
-  const canCreate = Boolean(cleaned) && !exactItem;
+  const hasPrefixMatch = cleaned ? currentItems().some((item) => {
+    const itemName = normalizeName(item.name).toLowerCase();
+    return itemName !== cleaned.toLowerCase() && itemName.startsWith(cleaned.toLowerCase());
+  }) : false;
+  const canCreate = Boolean(cleaned) && !exactItem && !hasPrefixMatch;
 
   if (!cleaned) {
     container.innerHTML = "";
@@ -517,7 +602,7 @@ function updateActiveSuggestion(container) {
 function selectSuggestedItem(itemName, line) {
   const item = findItem(itemName);
   if (!item) return;
-  line.engineeringName = line.engineeringName || item.name;
+  line.engineeringName = item.name;
   line.priceItemName = item.name;
   line.material = item.material;
   line.auxiliary = item.auxiliary;
@@ -549,6 +634,10 @@ function openPriceItemEditor(itemName, versionId) {
   state.pendingPriceItemName = existing ? existing.name : itemName;
   switchPage("prices");
   renderAll();
+}
+
+function displayEngineeringName(itemName) {
+  return String(itemName || "").replaceAll("/", "");
 }
 
 function findSimilarItems(query) {
@@ -614,7 +703,9 @@ function createPriceItemFromLine(line, rawName) {
   const newItem = {
     id: makeId("price"),
     name,
+    sortOrder: nextItemSortOrder(template?.categoryId || ""),
     unit: template?.unit || "",
+    categoryId: template?.categoryId || "",
     category: template?.category || "",
     description: line.note || template?.description || "",
     material: template ? toNumber(template.material) : 0,
@@ -637,17 +728,26 @@ function createPriceItemFromLine(line, rawName) {
 }
 
 function renderPrices() {
+  renderCategoryLibrary();
   const keyword = els.priceSearch.value.trim().toLowerCase();
   const items = currentItems().filter((item) => {
-    return !keyword || [item.name, item.category, item.description].join(" ").toLowerCase().includes(keyword);
+    return !keyword || [item.name, categoryNameForItem(item), item.description].join(" ").toLowerCase().includes(keyword);
   });
   els.priceCount.textContent = `${items.length} 条价格条目`;
+  const categoryOptions = [
+    `<option value="">未分类</option>`,
+    ...currentCategories().map((category) => `<option value="${escapeHtml(category.id)}">${escapeHtml(category.name)}</option>`)
+  ].join("");
   const rows = items.map((item) => {
     const unitPrice = calculateItemUnitPrice(item);
     return `
-      <tr class="price-row ${state.pendingPriceItemName === item.name ? "selected" : ""}" data-item-name="${escapeHtml(item.name)}">
+      <tr class="price-row ${state.pendingPriceItemName === item.name ? "selected" : ""}" data-item-name="${escapeHtml(item.name)}" data-category-id="${escapeHtml(item.categoryId || "")}" draggable="true">
         <td><input class="price-name-input" type="text" aria-label="价格条目名称" value="${escapeHtml(item.name)}"></td>
-        <td><input class="price-category" type="text" aria-label="分类" value="${escapeHtml(item.category || "")}"></td>
+        <td>
+          <select class="price-category-select" aria-label="分类">
+            ${categoryOptions}
+          </select>
+        </td>
         <td><input class="price-unit" type="text" aria-label="单位" value="${escapeHtml(item.unit || "")}"></td>
         <td><input class="price-material" type="number" min="0" step="0.01" aria-label="主材" value="${item.material}"></td>
         <td><input class="price-auxiliary" type="number" min="0" step="0.01" aria-label="辅材" value="${item.auxiliary}"></td>
@@ -655,6 +755,7 @@ function renderPrices() {
         <td><input class="price-labor" type="number" min="0" step="0.01" aria-label="人工" value="${item.labor}"></td>
         <td class="price-total"><b>${formatMoney(unitPrice)}</b></td>
         <td><textarea class="price-description" aria-label="说明">${escapeHtml(item.description || "")}</textarea></td>
+        <td class="price-actions-cell"><button class="price-delete danger small" type="button" aria-label="删除条目">删除</button></td>
       </tr>
     `;
   }).join("");
@@ -672,6 +773,7 @@ function renderPrices() {
           <th>人工</th>
           <th>综合单价</th>
           <th>说明</th>
+          <th>删除</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -696,9 +798,18 @@ function renderPrices() {
       });
     };
     bindText("price-name-input", "name");
-    bindText("price-category", "category");
     bindText("price-unit", "unit");
     bindText("price-description", "description");
+    const categorySelect = node.querySelector(".price-category-select");
+    categorySelect.value = item.categoryId || "";
+    categorySelect.addEventListener("change", (event) => {
+      const category = findCategory(event.target.value);
+      item.categoryId = category?.id || "";
+      item.category = category?.name || "";
+      item.sortOrder = nextItemSortOrder(item.categoryId, item.name);
+      saveState("已更新价格库");
+      renderPrices();
+    });
     [
       ["price-material", "material"],
       ["price-auxiliary", "auxiliary"],
@@ -715,6 +826,9 @@ function renderPrices() {
         renderTotalsAndPreview();
       });
     });
+    node.querySelector(".price-delete").addEventListener("click", () => {
+      deletePriceItem(item.name);
+    });
   });
   if (state.pendingPriceItemName) {
     const targetRow = els.priceList.querySelector(`.price-row[data-item-name="${cssEscape(state.pendingPriceItemName)}"]`);
@@ -726,6 +840,247 @@ function renderPrices() {
       state.pendingPriceItemName = "";
     }
   }
+  bindPriceItemDragAndDrop(items);
+}
+
+function renderCategoryLibrary() {
+  if (!els.categoryList || !els.categoryLibraryPanel) return;
+  els.categoryLibraryPanel.classList.toggle("collapsed", state.categoryLibraryCollapsed);
+  if (els.toggleCategoryLibraryBtn) {
+    els.toggleCategoryLibraryBtn.textContent = state.categoryLibraryCollapsed ? "展开分类库" : "收起分类库";
+  }
+  if (state.categoryLibraryCollapsed) {
+    els.categoryList.innerHTML = "";
+    return;
+  }
+  const usageById = new Map();
+  state.versions.forEach((version) => {
+    (version.items || []).forEach((item) => {
+      if (!item.categoryId) return;
+      usageById.set(item.categoryId, (usageById.get(item.categoryId) || 0) + 1);
+    });
+  });
+
+  els.categoryList.innerHTML = currentCategories().map((category) => `
+    <div class="category-row" data-category-id="${escapeHtml(category.id)}" draggable="true">
+      <button class="category-drag ghost" type="button" aria-label="拖动排序">☰</button>
+      <input class="category-name-input" type="text" aria-label="分类名称" value="${escapeHtml(category.name)}">
+      <span class="category-usage">${usageById.get(category.id) || 0} 条</span>
+      <button class="category-delete ghost" type="button">删除</button>
+    </div>
+  `).join("");
+
+  els.categoryList.querySelectorAll(".category-row").forEach((node) => {
+    const category = findCategory(node.dataset.categoryId);
+    if (!category) return;
+    node.querySelector(".category-name-input").addEventListener("change", (event) => {
+      const nextName = String(event.target.value || "").trim();
+      if (!nextName) return;
+      const conflict = currentCategories().find((item) => item.id !== category.id && item.name === nextName);
+      if (conflict) {
+        event.target.value = category.name;
+        return;
+      }
+      category.name = nextName;
+      state.versions.forEach((version) => {
+        (version.items || []).forEach((item) => {
+          if (item.categoryId === category.id) item.category = nextName;
+        });
+      });
+      saveState("已更新分类库");
+      renderPrices();
+    });
+    node.querySelector(".category-delete").addEventListener("click", () => {
+      state.categories = state.categories.filter((item) => item.id !== category.id);
+      state.versions.forEach((version) => {
+        (version.items || []).forEach((item) => {
+          if (item.categoryId === category.id) {
+            item.categoryId = "";
+            item.category = "";
+          }
+        });
+      });
+      saveState("已删除分类");
+      renderPrices();
+    });
+  });
+
+  bindCategoryDragAndDrop();
+}
+
+function addCategory() {
+  state.categories.push({
+    id: makeId("category"),
+    name: createUniqueCategoryName(),
+    sortOrder: currentCategories().length
+  });
+  saveState("已添加分类");
+  renderPrices();
+}
+
+function createUniqueCategoryName() {
+  let index = currentCategories().length + 1;
+  while (currentCategories().some((category) => category.name === `新分类 ${index}`)) {
+    index += 1;
+  }
+  return `新分类 ${index}`;
+}
+
+function addPriceItem() {
+  const version = currentVersion();
+  if (!version) return;
+  const newItem = {
+    id: makeId("price"),
+    name: createUniquePriceItemName(),
+    sortOrder: nextItemSortOrder(""),
+    unit: "",
+    categoryId: "",
+    category: "",
+    description: "",
+    material: 0,
+    auxiliary: 0,
+    wasteRate: 0,
+    labor: 0,
+    costMaterial: 0,
+    costAuxiliary: 0,
+    costWasteRate: 0,
+    costLabor: 0,
+    unitPrice: 0,
+    costUnitPrice: 0
+  };
+  version.items.push(newItem);
+  state.pendingPriceItemName = newItem.name;
+  saveState("新增价格条目");
+  renderPrices();
+}
+
+function createUniquePriceItemName() {
+  const version = currentVersion();
+  let index = version?.items?.length ? version.items.length + 1 : 1;
+  while (version?.items?.some((item) => item.name === `新价格条目 ${index}`)) {
+    index += 1;
+  }
+  return `新价格条目 ${index}`;
+}
+
+function nextItemSortOrder(categoryId, excludeName = "") {
+  const version = currentVersion();
+  const peers = (version?.items || []).filter((item) => {
+    return (item.categoryId || "") === (categoryId || "") && item.name !== excludeName;
+  });
+  if (!peers.length) return 0;
+  return Math.max(...peers.map((item) => Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : 0)) + 1;
+}
+
+function toggleCategoryLibrary() {
+  state.categoryLibraryCollapsed = !state.categoryLibraryCollapsed;
+  saveState(state.categoryLibraryCollapsed ? "已收起分类库" : "已展开分类库");
+  renderPrices();
+}
+
+function bindCategoryDragAndDrop() {
+  if (!els.categoryList) return;
+  let draggedId = "";
+  const rows = [...els.categoryList.querySelectorAll(".category-row")];
+
+  rows.forEach((row) => {
+    row.addEventListener("dragstart", () => {
+      draggedId = row.dataset.categoryId || "";
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      rows.forEach((item) => item.classList.remove("drag-over"));
+    });
+    row.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (!draggedId || draggedId === row.dataset.categoryId) return;
+      rows.forEach((item) => item.classList.remove("drag-over"));
+      row.classList.add("drag-over");
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drag-over");
+    });
+    row.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const targetId = row.dataset.categoryId || "";
+      if (!draggedId || !targetId || draggedId === targetId) return;
+      moveCategoryBefore(draggedId, targetId);
+      draggedId = "";
+    });
+  });
+}
+
+function moveCategoryBefore(draggedId, targetId) {
+  const categories = [...currentCategories()];
+  const draggedIndex = categories.findIndex((item) => item.id === draggedId);
+  const targetIndex = categories.findIndex((item) => item.id === targetId);
+  if (draggedIndex < 0 || targetIndex < 0) return;
+  const [dragged] = categories.splice(draggedIndex, 1);
+  categories.splice(targetIndex, 0, dragged);
+  state.categories = categories.map((item, index) => ({ ...item, sortOrder: index }));
+  saveState("已调整分类顺序");
+  renderPrices();
+}
+
+function bindPriceItemDragAndDrop(visibleItems) {
+  if (!els.priceList) return;
+  let draggedItemName = "";
+  let draggedCategoryId = "";
+  const rows = [...els.priceList.querySelectorAll(".price-row")];
+
+  rows.forEach((row) => {
+    row.addEventListener("dragstart", () => {
+      draggedItemName = row.dataset.itemName || "";
+      draggedCategoryId = row.dataset.categoryId || "";
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      rows.forEach((item) => item.classList.remove("drag-over"));
+    });
+    row.addEventListener("dragover", (event) => {
+      const targetCategoryId = row.dataset.categoryId || "";
+      if (!draggedItemName || draggedCategoryId !== targetCategoryId) return;
+      event.preventDefault();
+      rows.forEach((item) => item.classList.remove("drag-over"));
+      row.classList.add("drag-over");
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drag-over");
+    });
+    row.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const targetItemName = row.dataset.itemName || "";
+      const targetCategoryId = row.dataset.categoryId || "";
+      if (!draggedItemName || !targetItemName || draggedItemName === targetItemName) return;
+      if (draggedCategoryId !== targetCategoryId) return;
+      movePriceItemBefore(draggedItemName, targetItemName, draggedCategoryId, visibleItems);
+      draggedItemName = "";
+      draggedCategoryId = "";
+    });
+  });
+}
+
+function movePriceItemBefore(draggedItemName, targetItemName, categoryId, visibleItems) {
+  const version = currentVersion();
+  if (!version) return;
+  const categoryItems = visibleItems.filter((item) => (item.categoryId || "") === (categoryId || ""));
+  const draggedIndex = categoryItems.findIndex((item) => item.name === draggedItemName);
+  const targetIndex = categoryItems.findIndex((item) => item.name === targetItemName);
+  if (draggedIndex < 0 || targetIndex < 0) return;
+
+  const reordered = [...categoryItems];
+  const [dragged] = reordered.splice(draggedIndex, 1);
+  reordered.splice(targetIndex, 0, dragged);
+
+  reordered.forEach((item, index) => {
+    const actual = version.items.find((entry) => entry.name === item.name);
+    if (actual) actual.sortOrder = index;
+  });
+
+  saveState("已调整价格条目顺序");
+  renderPrices();
 }
 
 function renderTotalsAndPreview() {
@@ -887,8 +1242,10 @@ function getPortableState() {
     exportedAt: new Date().toISOString(),
     data: {
       versions: state.versions,
+      categories: state.categories,
       activeVersionId: state.activeVersionId,
       activePage: state.activePage,
+      categoryLibraryCollapsed: state.categoryLibraryCollapsed,
       customers: state.customers,
       quotes: state.quotes,
       activeCustomerId: state.activeCustomerId,
@@ -933,8 +1290,10 @@ function applyImportedState(parsed) {
     throw new Error("Invalid data file");
   }
   state.versions = data.versions;
+  state.categories = data.categories || [];
   state.activeVersionId = data.activeVersionId || data.versions[0]?.id || "";
   state.activePage = data.activePage || "manager";
+  state.categoryLibraryCollapsed = data.categoryLibraryCollapsed ?? true;
   state.customers = data.customers;
   state.quotes = data.quotes;
   state.activeCustomerId = data.activeCustomerId || data.customers[0]?.id || "";
@@ -980,6 +1339,37 @@ async function writeStateToFileHandle(handle) {
   const writable = await handle.createWritable();
   await writable.write(JSON.stringify(getPortableState(), null, 2));
   await writable.close();
+}
+
+function deletePriceItem(itemName) {
+  const version = currentVersion();
+  if (!version) return;
+  const item = version.items.find((entry) => entry.name === itemName);
+  if (!item) return;
+  const input = prompt(`请输入完整条目名称后删除?
+
+${item.name}`, "");
+  if (input === null) return;
+  if (String(input).trim() !== item.name) {
+    alert("输入的名称不完整或不一致，未删除该条目。");
+    return;
+  }
+  version.items = version.items.filter((entry) => entry.name !== item.name);
+  unlinkPriceItemFromQuotes(item.name, version.id);
+  if (state.pendingPriceItemName === item.name) state.pendingPriceItemName = "";
+  saveState("删除价格条目");
+  renderAll();
+}
+
+function unlinkPriceItemFromQuotes(itemName, versionId) {
+  state.quotes.forEach((quote) => {
+    if (quote.priceVersionId !== versionId) return;
+    quote.lines.forEach((line) => {
+      if (line.priceItemName !== itemName) return;
+      line.engineeringName = line.engineeringName || itemName;
+      line.priceItemName = "";
+    });
+  });
 }
 
 function syncLinePriceParts(item) {
@@ -1124,3 +1514,4 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
+
