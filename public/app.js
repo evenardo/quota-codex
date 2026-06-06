@@ -11,7 +11,11 @@ const state = {
   quotes: [],
   activeCustomerId: "",
   activeQuoteId: "",
-  pendingPriceItemName: ""
+  pendingPriceItemName: "",
+  expandedPriceItemName: "",
+  returnToQuoteId: "",
+  returnToLineId: "",
+  pendingLineId: ""
 };
 
 const els = {};
@@ -32,7 +36,7 @@ function bindElements() {
     "customerName", "customerContact", "customerPhone", "customerAddress", "customerList", "quoteList",
     "projectName", "clientName", "quoteDate", "priceVersion", "libraryPriceVersion",
     "cloneVersionBtn", "renameVersionBtn", "managementRate", "taxRate",
-    "subtotalText", "managementText", "taxText", "grandTotalText", "addLineBtn", "quoteLines",
+    "subtotalText", "managementText", "taxText", "grandTotalText", "addLineBtn", "addSpaceBtn", "quoteLines",
     "priceSearch", "priceCount", "priceList", "addPriceItemBtn", "previewTitle", "previewMeta", "previewTotal",
     "categoryList", "addCategoryBtn", "toggleCategoryLibraryBtn", "categoryLibraryPanel",
     "previewRows", "previewSubtotal", "previewManagement", "previewTax", "previewGrand"
@@ -129,6 +133,9 @@ function normalizeState() {
   state.activeQuoteId = state.activeQuoteId || state.quotes[0].id;
   state.activePage = state.activePage || "manager";
   state.categoryLibraryCollapsed = state.categoryLibraryCollapsed ?? true;
+  state.returnToQuoteId = state.returnToQuoteId || "";
+  state.returnToLineId = state.returnToLineId || "";
+  state.pendingLineId = state.pendingLineId || "";
 }
 
 function normalizeCategories(categories) {
@@ -140,6 +147,7 @@ function normalizeCategories(categories) {
     list.push({
       id: category?.id || makeId("category"),
       name,
+      description: String(category?.description || "").trim(),
       sortOrder: Number.isFinite(Number(category?.sortOrder)) ? Number(category.sortOrder) : list.length
     });
     return list;
@@ -152,7 +160,7 @@ function deriveCategoriesFromVersions(versions) {
     (version.items || []).forEach((item) => {
       const name = String(item?.category || "").trim();
       if (!name) return;
-      categories.push({ name, sortOrder: categories.length });
+      categories.push({ name, description: "", sortOrder: categories.length });
     });
   });
   return categories;
@@ -169,12 +177,47 @@ function normalizePriceItem(item, index = 0) {
   const categoryName = String(item?.category || "").trim();
   const category = state.categories.find((entry) => entry.id === item?.categoryId)
     || state.categories.find((entry) => entry.name === categoryName);
+  const parsedName = parsePriceNameUnit(item?.name || "");
   return {
     ...item,
     sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index,
     categoryId: category?.id || "",
-    category: category?.name || categoryName
+    category: category?.name || categoryName,
+    unit: parsedName?.unit || item?.unit || "",
+    costMaterial: toNumber(item?.costMaterial),
+    costAuxiliary: toNumber(item?.costAuxiliary),
+    costWasteRate: toNumber(item?.costWasteRate),
+    costLabor: toNumber(item?.costLabor),
+    costUnitPrice: toNumber(item?.costUnitPrice)
   };
+}
+
+function parsePriceNameUnit(name) {
+  const text = String(name || "").trim();
+  const slashIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("／"));
+  if (slashIndex <= 0 || slashIndex >= text.length - 1) return null;
+  const baseName = text.slice(0, slashIndex).trim();
+  const unit = text.slice(slashIndex + 1).trim();
+  if (!baseName || !unit) return null;
+  return { baseName, unit, separator: text[slashIndex] };
+}
+
+function setPriceItemUnit(item, nextUnit) {
+  const unit = String(nextUnit || "").trim();
+  if (!unit) return false;
+  const parsed = parsePriceNameUnit(item.name);
+  const baseName = parsed?.baseName || String(item.name || "").trim();
+  if (!baseName) return false;
+  const oldName = item.name;
+  const nextName = `${baseName}/${unit}`;
+  const duplicate = currentVersion()?.items?.some((entry) => entry !== item && normalizeName(entry.name) === normalizeName(nextName));
+  if (duplicate) return false;
+  item.unit = unit;
+  item.name = nextName;
+  syncLinePriceItemName(oldName, item.name);
+  if (state.expandedPriceItemName === oldName) state.expandedPriceItemName = item.name;
+  if (state.pendingPriceItemName === oldName) state.pendingPriceItemName = item.name;
+  return true;
 }
 
 function normalizeCustomer(customer) {
@@ -199,10 +242,65 @@ function normalizeQuote(quote) {
     priceVersionId: quote.priceVersionId || state.activeVersionId,
     managementRate: quote.managementRate ?? 3,
     taxRate: quote.taxRate ?? 1,
+    spaces: quote.spaces || [],
     lines: quote.lines || []
   };
   normalized.lines = normalized.lines.map((line) => normalizeLine(line, normalized.priceVersionId));
+  normalized.spaces = normalizeSpaces(normalized.spaces, normalized.lines);
   return normalized;
+}
+
+function normalizeSpaces(spaces, lines = []) {
+  const hasCollapsedState = (spaces || []).some((space) => Object.prototype.hasOwnProperty.call(space || {}, "collapsed"));
+  const normalized = (spaces || []).map((space, index) => normalizeSpace(space, index)).filter((space) => space.name);
+  if (!normalized.length) {
+    const names = [];
+    lines.forEach((line) => {
+      const name = String(line.area || "全屋").trim() || "全屋";
+      if (!names.includes(name)) names.push(name);
+    });
+    (names.length ? names : ["全屋"]).forEach((name, index) => {
+      normalized.push(normalizeSpace({ name }, index));
+    });
+  }
+
+  const byName = new Map(normalized.map((space) => [space.name, space]));
+  const fallback = normalized[0];
+  lines.forEach((line) => {
+    if (normalized.some((space) => space.id === line.spaceId)) return;
+    const matched = byName.get(String(line.area || "").trim());
+    line.spaceId = matched?.id || fallback.id;
+  });
+  const sorted = normalized.sort((a, b) => a.sortOrder - b.sortOrder);
+  if (!hasCollapsedState && sorted.length > 1) {
+    sorted.forEach((space, index) => { space.collapsed = index > 0; });
+  } else {
+    let hasOpenSpace = false;
+    sorted.forEach((space) => {
+      if (!space.collapsed && !hasOpenSpace) {
+        hasOpenSpace = true;
+        return;
+      }
+      if (!space.collapsed) space.collapsed = true;
+    });
+  }
+  return sorted;
+}
+
+function normalizeSpace(space, index = 0) {
+  return {
+    id: space.id || makeId("space"),
+    name: String(space.name || "全屋").trim() || "全屋",
+    area: toNumber(space.area),
+    perimeter: toNumber(space.perimeter),
+    height: toNumber(space.height),
+    collapsed: Boolean(space.collapsed),
+    sortOrder: Number.isFinite(Number(space.sortOrder)) ? Number(space.sortOrder) : index
+  };
+}
+
+function makeSpace(name = "新空间") {
+  return normalizeSpace({ id: makeId("space"), name, sortOrder: currentQuote()?.spaces?.length || 0 });
 }
 
 function bindEvents() {
@@ -224,6 +322,7 @@ function bindEvents() {
   els.cloneVersionBtn.addEventListener("click", cloneVersion);
   els.renameVersionBtn.addEventListener("click", renameVersion);
   els.addLineBtn.addEventListener("click", addLine);
+  if (els.addSpaceBtn) els.addSpaceBtn.addEventListener("click", addSpace);
   if (els.addPriceItemBtn) els.addPriceItemBtn.addEventListener("click", addPriceItem);
   if (els.addCategoryBtn) els.addCategoryBtn.addEventListener("click", addCategory);
   if (els.toggleCategoryLibraryBtn) {
@@ -306,18 +405,31 @@ function categoryNameForItem(item) {
   return findCategory(item?.categoryId)?.name || String(item?.category || "").trim();
 }
 
-function makeLine(itemName = "", area = "", quantity = 0) {
+function categoryDescriptionForItem(item) {
+  return findCategory(item?.categoryId)?.description || "";
+}
+
+function processNoteForLine(line, versionId = currentQuote()?.priceVersionId || currentVersion()?.id) {
+  const item = findItem(line.priceItemName, versionId);
+  const parts = [
+    categoryDescriptionForItem(item),
+    item?.description
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  return [...new Set(parts)].join("；");
+}
+
+function makeLine(itemName = "", area = "", quantity = 0, spaceId = "") {
   const item = findItem(itemName);
   return normalizeLine({
     id: makeId("line"),
     priceItemName: itemName,
     area,
+    spaceId,
     quantity,
     material: item ? item.material : 0,
     auxiliary: item ? item.auxiliary : 0,
     wasteRate: item ? item.wasteRate : 0,
-    labor: item ? item.labor : 0,
-    note: item ? item.description : ""
+    labor: item ? item.labor : 0
   });
 }
 
@@ -334,13 +446,13 @@ function normalizeLine(line, versionId = currentVersion()?.id) {
       : fallbackEngineeringName,
     priceItemName,
     area: line.area || "",
+    spaceId: line.spaceId || "",
     quantity: toNumber(line.quantity),
     material: hasSplitPrice ? toNumber(line.material) : toNumber(item?.material),
     auxiliary: hasSplitPrice ? toNumber(line.auxiliary) : toNumber(item?.auxiliary),
     wasteRate: hasSplitPrice ? toNumber(line.wasteRate) : toNumber(item?.wasteRate),
     labor: hasSplitPrice ? toNumber(line.labor) : toNumber(item?.labor),
-    legacyUnitPrice: hasSplitPrice || item ? (line.legacyUnitPrice ?? null) : (line.customPrice ?? null),
-    note: line.note || item?.description || ""
+    legacyUnitPrice: hasSplitPrice || item ? (line.legacyUnitPrice ?? null) : (line.customPrice ?? null)
   };
 }
 
@@ -425,27 +537,126 @@ function renderSettings() {
 function renderLines() {
   const quote = currentQuote();
   if (!quote) return;
-  els.quoteLines.innerHTML = quote.lines.map((line) => {
+  const spaces = sortedSpaces(quote);
+  els.quoteLines.innerHTML = spaces.map((space, spaceIndex) => {
+    const spaceLines = linesForSpace(quote, space.id);
+    return `
+      <section class="space-card ${space.collapsed ? "collapsed" : ""}" data-space-id="${escapeHtml(space.id)}">
+        <div class="space-head">
+          <div class="space-title">
+            <input class="space-name" type="text" aria-label="空间名称" title="${space.collapsed ? "点击空白处展开" : "点击空白处收起"}" value="${escapeHtml(space.name)}">
+            ${space.collapsed ? `<span class="space-count">${spaceLines.length} 条目</span>` : ""}
+          </div>
+          <label>面积（平米）<input class="space-area" type="number" min="0" step="0.01" aria-label="面积（平米）" value="${space.area}"></label>
+          <label>周长（米）<input class="space-perimeter" type="number" min="0" step="0.01" aria-label="周长（米）" value="${space.perimeter}"></label>
+          <label>高度（米）<input class="space-height" type="number" min="0" step="0.01" aria-label="高度（米）" value="${space.height}"></label>
+          <div class="space-actions">
+            <button class="space-up ghost small" type="button" ${spaceIndex === 0 ? "disabled" : ""}>上移</button>
+            <button class="space-down ghost small" type="button" ${spaceIndex === spaces.length - 1 ? "disabled" : ""}>下移</button>
+            <button class="add-space-line small" type="button">添加项目</button>
+          </div>
+        </div>
+        ${space.collapsed ? "" : `
+        <div class="space-lines">
+          ${renderInsertSlot(space.id, 0)}
+          ${spaceLines.map((line, index) => `
+            ${renderLineItem(line, quote)}
+            ${renderInsertSlot(space.id, index + 1)}
+          `).join("")}
+        </div>
+        `}
+      </section>
+    `;
+  }).join("");
+
+  els.quoteLines.querySelectorAll(".space-card").forEach((spaceNode) => {
+    const space = quote.spaces.find((entry) => entry.id === spaceNode.dataset.spaceId);
+    if (!space) return;
+    spaceNode.querySelector(".space-name").addEventListener("input", (event) => {
+      space.name = event.target.value;
+      saveState("已自动保存");
+      renderTotalsAndPreview();
+    });
+    spaceNode.querySelector(".space-area").addEventListener("input", (event) => {
+      space.area = toNumber(event.target.value);
+      saveState("已自动保存");
+      renderTotalsAndPreview();
+    });
+    spaceNode.querySelector(".space-perimeter").addEventListener("input", (event) => {
+      space.perimeter = toNumber(event.target.value);
+      saveState("已自动保存");
+      renderTotalsAndPreview();
+    });
+    spaceNode.querySelector(".space-height").addEventListener("input", (event) => {
+      space.height = toNumber(event.target.value);
+      saveState("已自动保存");
+      renderTotalsAndPreview();
+    });
+    spaceNode.querySelector(".space-head").addEventListener("click", (event) => {
+      if (event.target.closest("input, select, button")) return;
+      toggleSpace(space.id);
+    });
+    spaceNode.querySelector(".space-up").addEventListener("click", () => moveSpace(space.id, -1));
+    spaceNode.querySelector(".space-down").addEventListener("click", () => moveSpace(space.id, 1));
+    spaceNode.querySelector(".add-space-line").addEventListener("click", () => addLine(space.id));
+  });
+
+  els.quoteLines.querySelectorAll(".insert-line-slot").forEach((button) => {
+    button.addEventListener("click", () => addLineAt(button.dataset.spaceId, Number(button.dataset.position || 0)));
+  });
+
+  els.quoteLines.querySelectorAll(".line-item").forEach((node) => {
+    bindLineItem(node, quote);
+  });
+
+  if (state.pendingLineId) {
+    const targetLine = els.quoteLines.querySelector(`.line-item[data-line-id="${cssEscape(state.pendingLineId)}"]`);
+    if (targetLine) {
+      targetLine.classList.add("returned");
+      targetLine.scrollIntoView({ block: "center" });
+      setTimeout(() => targetLine.classList.remove("returned"), 2200);
+    }
+    state.pendingLineId = "";
+  }
+}
+
+function renderInsertSlot(spaceId, position) {
+  return `
+    <button class="insert-line-slot" type="button" data-space-id="${escapeHtml(spaceId)}" data-position="${position}" aria-label="在这里添加工程项目">
+      <span>+</span>
+    </button>
+  `;
+}
+
+function renderLineItem(line, quote) {
     const item = findItem(line.priceItemName, quote.priceVersionId);
     const unit = item?.unit || "";
     const unitPrice = calculateLineUnitPrice(line);
+    const costUnitPrice = calculateLineCostUnitPrice(line, quote.priceVersionId);
     const engineeringDisplayName = line.priceItemName && line.engineeringName === displayEngineeringName(line.priceItemName)
       ? line.priceItemName
       : line.engineeringName;
     const amount = toNumber(line.quantity) * unitPrice;
+    const profit = toNumber(line.quantity) * (unitPrice - costUnitPrice);
+    const spaceOptions = sortedSpaces(quote).map((space) => (
+      `<option value="${escapeHtml(space.id)}" ${space.id === line.spaceId ? "selected" : ""}>${escapeHtml(space.name)}</option>`
+    )).join("");
     return `
       <div class="line-item" data-line-id="${escapeHtml(line.id)}">
         <div class="line-field project-field">
           <label>工程项目</label>
           <div class="project-picker">
             <input class="line-name" type="text" aria-label="工程项目" placeholder="输入工程项目，选择相似价格条目" value="${escapeHtml(engineeringDisplayName)}" autocomplete="off">
-            <button class="edit-price-item ghost small" type="button" ${line.priceItemName ? "" : "disabled"}>编辑</button>
             <div class="suggestions"></div>
           </div>
         </div>
-        <div class="line-field area-field">
-          <label>区域</label>
-          <input class="line-area" type="text" aria-label="区域" placeholder="位置/房间" value="${escapeHtml(line.area)}">
+        <div class="line-field part-field">
+          <label>部位</label>
+          <input class="line-part" type="text" aria-label="部位" placeholder="小书柜/电视柜" value="${escapeHtml(line.area || "")}">
+        </div>
+        <div class="line-field move-field">
+          <label>移到空间</label>
+          <select class="line-space" aria-label="移到空间">${spaceOptions}</select>
         </div>
         <div class="line-field qty-field">
           <label>工程量</label>
@@ -453,59 +664,85 @@ function renderLines() {
         </div>
         <div class="line-field unit-field">
           <label>单位</label>
-          <div class="line-unit">${escapeHtml(unit)}</div>
-        </div>
-        <div class="line-field price-field">
-          <label>综合单价</label>
-          <div class="readonly-price">${formatMoney(unitPrice)}</div>
-        </div>
-        <div class="line-field amount-field">
-          <label>金额</label>
-          <div class="amount">${formatMoney(amount)}</div>
+          <button class="line-unit jump-price-item" type="button" ${line.priceItemName ? "" : "disabled"}>${escapeHtml(unit)}</button>
         </div>
         <div class="line-field action-field">
           <label class="action-label" aria-hidden="true">&nbsp;</label>
           <button class="remove-btn" type="button" aria-label="删除">×</button>
         </div>
+        <div class="line-field price-field">
+          <label>综合单价</label>
+          <button class="readonly-price jump-price-item" type="button" ${line.priceItemName ? "" : "disabled"}>${formatMoney(unitPrice)}</button>
+        </div>
+        <div class="line-field cost-price-field">
+          <label>成本单价</label>
+          <button class="readonly-price jump-price-item" type="button" ${line.priceItemName ? "" : "disabled"}>${formatMoney(costUnitPrice)}</button>
+        </div>
+        <div class="line-field profit-field">
+          <label>利润</label>
+          <div class="profit">${formatMoney(profit)}</div>
+        </div>
+        <div class="line-field amount-field">
+          <label>金额</label>
+          <div class="amount">${formatMoney(amount)}</div>
+        </div>
       </div>
     `;
-  }).join("");
+}
 
-  els.quoteLines.querySelectorAll(".line-item").forEach((node) => {
-    const line = quote.lines.find((entry) => entry.id === node.dataset.lineId);
-    const nameInput = node.querySelector(".line-name");
-    const suggestions = node.querySelector(".suggestions");
-    nameInput.addEventListener("input", () => {
-      line.engineeringName = nameInput.value;
-      saveState("已自动保存");
-      renderSuggestions(suggestions, line, nameInput.value);
-      renderTotalsAndPreview();
-    });
-    nameInput.addEventListener("focus", () => renderSuggestions(suggestions, line, nameInput.value));
-    nameInput.addEventListener("blur", () => setTimeout(() => { suggestions.innerHTML = ""; }, 120));
-    nameInput.addEventListener("keydown", (event) => handleSuggestionKeys(event, suggestions, line));
-    node.querySelector(".line-area").addEventListener("input", (event) => {
-      line.area = event.target.value;
-      saveState("已自动保存");
-      renderTotalsAndPreview();
-    });
-    node.querySelector(".line-qty").addEventListener("input", (event) => {
-      line.quantity = toNumber(event.target.value);
-      saveState("已自动保存");
-      const amountNode = node.querySelector(".amount");
-      if (amountNode) amountNode.textContent = formatMoney(toNumber(line.quantity) * calculateLineUnitPrice(line));
-      renderTotalsAndPreview();
-    });
-    node.querySelector(".edit-price-item").addEventListener("click", () => {
+function bindLineItem(node, quote) {
+  const line = quote.lines.find((entry) => entry.id === node.dataset.lineId);
+  if (!line) return;
+  const nameInput = node.querySelector(".line-name");
+  const suggestions = node.querySelector(".suggestions");
+  nameInput.addEventListener("input", () => {
+    line.engineeringName = nameInput.value;
+    saveState("已自动保存");
+    renderSuggestions(suggestions, line, nameInput.value);
+    renderTotalsAndPreview();
+  });
+  nameInput.addEventListener("focus", () => renderSuggestions(suggestions, line, nameInput.value));
+  nameInput.addEventListener("blur", () => setTimeout(() => { suggestions.innerHTML = ""; }, 120));
+  nameInput.addEventListener("keydown", (event) => handleSuggestionKeys(event, suggestions, line));
+  node.querySelector(".line-part").addEventListener("input", (event) => {
+    line.area = event.target.value;
+    saveState("已自动保存");
+    renderTotalsAndPreview();
+  });
+  node.querySelector(".line-space").addEventListener("change", (event) => {
+    moveLineToSpace(line.id, event.target.value);
+  });
+  node.querySelector(".line-qty").addEventListener("input", (event) => {
+    line.quantity = toNumber(event.target.value);
+    saveState("已自动保存");
+    const amountNode = node.querySelector(".amount");
+    const profitNode = node.querySelector(".profit");
+    if (amountNode) amountNode.textContent = formatMoney(toNumber(line.quantity) * calculateLineUnitPrice(line));
+    if (profitNode) profitNode.textContent = formatMoney(toNumber(line.quantity) * (calculateLineUnitPrice(line) - calculateLineCostUnitPrice(line, quote.priceVersionId)));
+    renderTotalsAndPreview();
+  });
+  node.querySelectorAll(".jump-price-item").forEach((button) => {
+    button.addEventListener("click", () => {
       if (!line.priceItemName) return;
-      openPriceItemEditor(line.priceItemName, quote.priceVersionId);
-    });
-    node.querySelector(".remove-btn").addEventListener("click", () => {
-      quote.lines = quote.lines.filter((entry) => entry.id !== line.id);
-      saveState("已删除工程项目");
-      renderAll();
+      openPriceItemEditor(line.priceItemName, quote.priceVersionId, {
+        quoteId: quote.id,
+        lineId: line.id
+      });
     });
   });
+  node.querySelector(".remove-btn").addEventListener("click", () => {
+    quote.lines = quote.lines.filter((entry) => entry.id !== line.id);
+    saveState("已删除工程项目");
+    renderAll();
+  });
+}
+
+function sortedSpaces(quote = currentQuote()) {
+  return (quote?.spaces || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+function linesForSpace(quote, spaceId) {
+  return (quote.lines || []).filter((line) => line.spaceId === spaceId);
 }
 
 function renderSuggestions(container, line, query) {
@@ -609,7 +846,6 @@ function selectSuggestedItem(itemName, line) {
   line.wasteRate = item.wasteRate;
   line.labor = item.labor;
   line.legacyUnitPrice = null;
-  line.note = item.description;
   saveState("已选择价格条目");
   renderLines();
   renderTotalsAndPreview();
@@ -626,13 +862,40 @@ function activateSuggestion(button, line) {
   }
 }
 
-function openPriceItemEditor(itemName, versionId) {
+function openPriceItemEditor(itemName, versionId, returnContext = null) {
   const version = state.versions.find((item) => item.id === versionId) || currentVersion();
   if (!version) return;
   const existing = version.items.find((entry) => entry.name === itemName);
   state.activeVersionId = version.id;
   state.pendingPriceItemName = existing ? existing.name : itemName;
+  state.expandedPriceItemName = existing ? existing.name : "";
+  state.returnToQuoteId = returnContext?.quoteId || "";
+  state.returnToLineId = returnContext?.lineId || "";
+  if (els.priceSearch) els.priceSearch.value = "";
   switchPage("prices");
+  renderAll();
+}
+
+function returnContextForItem(item) {
+  if (!state.returnToQuoteId || !state.returnToLineId) return null;
+  const quote = state.quotes.find((entry) => entry.id === state.returnToQuoteId);
+  const line = quote?.lines.find((entry) => entry.id === state.returnToLineId);
+  if (!quote || !line || line.priceItemName !== item.name) return null;
+  return { quote, line };
+}
+
+function returnToQuoteLine() {
+  const quoteId = state.returnToQuoteId;
+  const lineId = state.returnToLineId;
+  if (!quoteId || !lineId) return;
+  const quote = state.quotes.find((entry) => entry.id === quoteId);
+  if (!quote) return;
+  state.activeQuoteId = quote.id;
+  state.activeCustomerId = quote.customerId || state.activeCustomerId;
+  state.pendingLineId = lineId;
+  state.returnToQuoteId = "";
+  state.returnToLineId = "";
+  switchPage("editor");
   renderAll();
 }
 
@@ -697,17 +960,25 @@ function createPriceItemFromLine(line, rawName) {
 
   const comparable = findComparableItems(name, 5);
   const template = comparable[0];
+  const parsedInputName = parsePriceNameUnit(name);
+  const itemUnit = parsedInputName?.unit || template?.unit || "项";
+  const itemName = parsedInputName ? name : `${name}/${itemUnit}`;
+  const existingWithUnit = version.items.find((item) => normalizeName(item.name) === normalizeName(itemName));
+  if (existingWithUnit) {
+    alert(`价格库里已经有“${existingWithUnit.name}”了，请直接从相似项里选择。`);
+    return;
+  }
   const similarText = comparable.length ? comparable.map((item) => item.name).join("、") : "暂无相似条目";
-  if (!confirm(`要把“${name}”新增到当前价格库吗？\n\n相似条目：${similarText}`)) return;
+  if (!confirm(`要把“${itemName}”新增到当前价格库吗？\n\n相似条目：${similarText}`)) return;
 
   const newItem = {
     id: makeId("price"),
-    name,
+    name: itemName,
     sortOrder: nextItemSortOrder(template?.categoryId || ""),
-    unit: template?.unit || "",
+    unit: itemUnit,
     categoryId: template?.categoryId || "",
     category: template?.category || "",
-    description: line.note || template?.description || "",
+    description: template?.description || "",
     material: template ? toNumber(template.material) : 0,
     auxiliary: template ? toNumber(template.auxiliary) : 0,
     wasteRate: template ? toNumber(template.wasteRate) : 0,
@@ -722,7 +993,6 @@ function createPriceItemFromLine(line, rawName) {
 
   version.items.push(newItem);
   selectSuggestedItem(newItem.name, line);
-  line.note = newItem.description;
   saveState("已新增价格条目");
   renderAll();
 }
@@ -740,6 +1010,8 @@ function renderPrices() {
   ].join("");
   const rows = items.map((item) => {
     const unitPrice = calculateItemUnitPrice(item);
+    const costUnitPrice = calculateItemCostUnitPrice(item);
+    const isExpanded = state.expandedPriceItemName === item.name;
     return `
       <tr class="price-row ${state.pendingPriceItemName === item.name ? "selected" : ""}" data-item-name="${escapeHtml(item.name)}" data-category-id="${escapeHtml(item.categoryId || "")}" draggable="true">
         <td><input class="price-name-input" type="text" aria-label="价格条目名称" value="${escapeHtml(item.name)}"></td>
@@ -748,15 +1020,52 @@ function renderPrices() {
             ${categoryOptions}
           </select>
         </td>
-        <td><input class="price-unit" type="text" aria-label="单位" value="${escapeHtml(item.unit || "")}"></td>
-        <td><input class="price-material" type="number" min="0" step="0.01" aria-label="主材" value="${item.material}"></td>
-        <td><input class="price-auxiliary" type="number" min="0" step="0.01" aria-label="辅材" value="${item.auxiliary}"></td>
-        <td><input class="price-waste" type="number" min="0" max="100" step="0.1" aria-label="损耗百分比" value="${formatPercentInput(item.wasteRate)}"></td>
-        <td><input class="price-labor" type="number" min="0" step="0.01" aria-label="人工" value="${item.labor}"></td>
-        <td class="price-total"><b>${formatMoney(unitPrice)}</b></td>
-        <td><textarea class="price-description" aria-label="说明">${escapeHtml(item.description || "")}</textarea></td>
+        <td>
+          <button class="price-expand price-unit-toggle" type="button" aria-expanded="${isExpanded ? "true" : "false"}">
+            <b>${escapeHtml(item.unit || parsePriceNameUnit(item.name)?.unit || "")}</b>
+          </button>
+        </td>
+        <td class="price-total">
+          <button class="price-expand price-unit-price-toggle" type="button" aria-expanded="${isExpanded ? "true" : "false"}">
+            <b>${formatMoney(unitPrice)}</b>
+          </button>
+        </td>
+        <td class="price-total">
+          <button class="price-expand price-cost-toggle" type="button" aria-expanded="${isExpanded ? "true" : "false"}">
+            <b>${formatMoney(costUnitPrice)}</b>
+          </button>
+        </td>
         <td class="price-actions-cell"><button class="price-delete danger small" type="button" aria-label="删除条目">删除</button></td>
       </tr>
+      ${isExpanded ? `
+      <tr class="price-detail-row" data-detail-for="${escapeHtml(item.name)}">
+        <td colspan="6">
+          <div class="price-detail-grid">
+            <section class="price-detail-section">
+              <h3>综合单价</h3>
+              <label>主材<input class="price-material" type="number" min="0" step="0.01" aria-label="主材" value="${item.material}"></label>
+              <label>辅材<input class="price-auxiliary" type="number" min="0" step="0.01" aria-label="辅材" value="${item.auxiliary}"></label>
+              <label>损耗%<input class="price-waste" type="number" min="0" max="100" step="0.1" aria-label="损耗百分比" value="${formatPercentInput(item.wasteRate)}"></label>
+              <label>人工<input class="price-labor" type="number" min="0" step="0.01" aria-label="人工" value="${item.labor}"></label>
+              <strong class="price-detail-total">综合单价 ${formatMoney(unitPrice)}</strong>
+            </section>
+            <section class="price-detail-section">
+              <h3>成本单价</h3>
+              <label>成本主材<input class="price-cost-material" type="number" min="0" step="0.01" aria-label="成本主材" value="${item.costMaterial}"></label>
+              <label>成本辅材<input class="price-cost-auxiliary" type="number" min="0" step="0.01" aria-label="成本辅材" value="${item.costAuxiliary}"></label>
+              <label>成本损耗%<input class="price-cost-waste" type="number" min="0" max="100" step="0.1" aria-label="成本损耗百分比" value="${formatPercentInput(item.costWasteRate)}"></label>
+              <label>成本人工<input class="price-cost-labor" type="number" min="0" step="0.01" aria-label="成本人工" value="${item.costLabor}"></label>
+              <strong class="price-detail-cost-total">成本单价 ${formatMoney(costUnitPrice)}</strong>
+            </section>
+            <section class="price-detail-section description-section">
+              <h3>说明</h3>
+              <label>单位<input class="price-unit-detail" type="text" aria-label="单位" value="${escapeHtml(item.unit || parsePriceNameUnit(item.name)?.unit || "")}"></label>
+              <textarea class="price-description" aria-label="说明">${escapeHtml(item.description || "")}</textarea>
+            </section>
+          </div>
+        </td>
+      </tr>
+      ` : ""}
     `;
   }).join("");
 
@@ -767,12 +1076,8 @@ function renderPrices() {
           <th>价格条目名称</th>
           <th>分类</th>
           <th>单位</th>
-          <th>主材</th>
-          <th>辅材</th>
-          <th>损耗%</th>
-          <th>人工</th>
           <th>综合单价</th>
-          <th>说明</th>
+          <th>成本单价</th>
           <th>删除</th>
         </tr>
       </thead>
@@ -786,9 +1091,20 @@ function renderPrices() {
       node.querySelector(`.${className}`).addEventListener("input", (event) => {
         if (key === "name") {
           const oldName = item.name;
-          item.name = event.target.value;
+          const nextName = event.target.value;
+          const parsed = parsePriceNameUnit(nextName);
+          item.name = nextName;
+          if (parsed) {
+            item.unit = parsed.unit;
+            event.target.classList.remove("invalid");
+            const unitNode = node.querySelector(".price-unit-toggle b");
+            if (unitNode) unitNode.textContent = parsed.unit;
+          } else {
+            event.target.classList.add("invalid");
+          }
           node.dataset.itemName = item.name;
           syncLinePriceItemName(oldName, item.name);
+          if (state.expandedPriceItemName === oldName) state.expandedPriceItemName = item.name;
         } else {
           item[key] = event.target.value;
         }
@@ -798,8 +1114,12 @@ function renderPrices() {
       });
     };
     bindText("price-name-input", "name");
-    bindText("price-unit", "unit");
-    bindText("price-description", "description");
+    node.querySelector(".price-name-input").addEventListener("blur", (event) => {
+      if (parsePriceNameUnit(event.target.value)) return;
+      alert("价格条目名称必须包含斜杠单位，例如：水电开槽/平米");
+      event.target.classList.add("invalid");
+      event.target.focus();
+    });
     const categorySelect = node.querySelector(".price-category-select");
     categorySelect.value = item.categoryId || "";
     categorySelect.addEventListener("change", (event) => {
@@ -810,25 +1130,18 @@ function renderPrices() {
       saveState("已更新价格库");
       renderPrices();
     });
-    [
-      ["price-material", "material"],
-      ["price-auxiliary", "auxiliary"],
-      ["price-waste", "wasteRate", "percent"],
-      ["price-labor", "labor"]
-    ].forEach(([className, key, mode]) => {
-      node.querySelector(`.${className}`).addEventListener("input", (event) => {
-        item[key] = mode === "percent" ? parsePercentInput(event.target.value) : toNumber(event.target.value);
-        item.unitPrice = calculateItemUnitPrice(item);
-        saveState("已更新价格库");
-        syncLinePriceParts(item);
-        node.querySelector(".price-total b").textContent = formatMoney(item.unitPrice);
-        renderLines();
-        renderTotalsAndPreview();
-      });
+    node.querySelectorAll(".price-expand").forEach((button) => {
+      button.addEventListener("click", () => togglePriceItemDetails(item.name));
     });
     node.querySelector(".price-delete").addEventListener("click", () => {
       deletePriceItem(item.name);
     });
+  });
+
+  els.priceList.querySelectorAll(".price-detail-row").forEach((node) => {
+    const item = findItem(node.dataset.detailFor);
+    if (!item) return;
+    bindPriceDetailInputs(node, item);
   });
   if (state.pendingPriceItemName) {
     const targetRow = els.priceList.querySelector(`.price-row[data-item-name="${cssEscape(state.pendingPriceItemName)}"]`);
@@ -841,6 +1154,79 @@ function renderPrices() {
     }
   }
   bindPriceItemDragAndDrop(items);
+}
+
+function togglePriceItemDetails(itemName) {
+  const item = findItem(itemName);
+  if (state.expandedPriceItemName === itemName && item && returnContextForItem(item)) {
+    returnToQuoteLine();
+    return;
+  }
+  state.expandedPriceItemName = state.expandedPriceItemName === itemName ? "" : itemName;
+  renderPrices();
+}
+
+function bindPriceDetailInputs(node, item) {
+  const updateTotals = () => {
+    item.unitPrice = calculateItemUnitPrice(item);
+    item.costUnitPrice = calculateItemCostUnitPrice(item);
+    const priceTotal = node.querySelector(".price-detail-total");
+    const costTotal = node.querySelector(".price-detail-cost-total");
+    if (priceTotal) priceTotal.textContent = `综合单价 ${formatMoney(item.unitPrice)}`;
+    if (costTotal) costTotal.textContent = `成本单价 ${formatMoney(item.costUnitPrice)}`;
+    const mainRow = els.priceList.querySelector(`.price-row[data-item-name="${cssEscape(item.name)}"]`);
+    if (mainRow) {
+      const totals = mainRow.querySelectorAll(".price-total b");
+      if (totals[0]) totals[0].textContent = formatMoney(item.unitPrice);
+      if (totals[1]) totals[1].textContent = formatMoney(item.costUnitPrice);
+    }
+  };
+
+  [
+    ["price-material", "material"],
+    ["price-auxiliary", "auxiliary"],
+    ["price-waste", "wasteRate", "percent"],
+    ["price-labor", "labor"],
+    ["price-cost-material", "costMaterial"],
+    ["price-cost-auxiliary", "costAuxiliary"],
+    ["price-cost-waste", "costWasteRate", "percent"],
+    ["price-cost-labor", "costLabor"]
+  ].forEach(([className, key, mode]) => {
+    const input = node.querySelector(`.${className}`);
+    if (!input) return;
+    input.addEventListener("input", (event) => {
+      item[key] = mode === "percent" ? parsePercentInput(event.target.value) : toNumber(event.target.value);
+      updateTotals();
+      saveState("已更新价格库");
+      syncLinePriceParts(item);
+      renderLines();
+      renderTotalsAndPreview();
+    });
+  });
+
+  const descriptionInput = node.querySelector(".price-description");
+  if (descriptionInput) {
+    descriptionInput.addEventListener("input", (event) => {
+      item.description = event.target.value;
+      saveState("已更新价格库");
+      renderTotalsAndPreview();
+    });
+  }
+
+  const unitInput = node.querySelector(".price-unit-detail");
+  if (unitInput) {
+    unitInput.addEventListener("change", (event) => {
+      if (!setPriceItemUnit(item, event.target.value)) {
+        alert("单位不能为空，且修改后不能和已有价格条目重名。价格条目名称需要保持“名称/单位”的格式。");
+        event.target.value = item.unit || parsePriceNameUnit(item.name)?.unit || "";
+        return;
+      }
+      saveState("已更新价格库");
+      renderPrices();
+      renderLines();
+      renderTotalsAndPreview();
+    });
+  }
 }
 
 function renderCategoryLibrary() {
@@ -867,6 +1253,7 @@ function renderCategoryLibrary() {
       <input class="category-name-input" type="text" aria-label="分类名称" value="${escapeHtml(category.name)}">
       <span class="category-usage">${usageById.get(category.id) || 0} 条</span>
       <button class="category-delete ghost" type="button">删除</button>
+      <textarea class="category-description-input" aria-label="分类说明" placeholder="这一类项目的通用工艺说明">${escapeHtml(category.description || "")}</textarea>
     </div>
   `).join("");
 
@@ -890,6 +1277,11 @@ function renderCategoryLibrary() {
       saveState("已更新分类库");
       renderPrices();
     });
+    node.querySelector(".category-description-input").addEventListener("input", (event) => {
+      category.description = event.target.value;
+      saveState("已更新分类库");
+      renderTotalsAndPreview();
+    });
     node.querySelector(".category-delete").addEventListener("click", () => {
       state.categories = state.categories.filter((item) => item.id !== category.id);
       state.versions.forEach((version) => {
@@ -912,6 +1304,7 @@ function addCategory() {
   state.categories.push({
     id: makeId("category"),
     name: createUniqueCategoryName(),
+    description: "",
     sortOrder: currentCategories().length
   });
   saveState("已添加分类");
@@ -929,11 +1322,12 @@ function createUniqueCategoryName() {
 function addPriceItem() {
   const version = currentVersion();
   if (!version) return;
+  const name = createUniquePriceItemName();
   const newItem = {
     id: makeId("price"),
-    name: createUniquePriceItemName(),
+    name,
     sortOrder: nextItemSortOrder(""),
-    unit: "",
+    unit: parsePriceNameUnit(name)?.unit || "项",
     categoryId: "",
     category: "",
     description: "",
@@ -957,10 +1351,10 @@ function addPriceItem() {
 function createUniquePriceItemName() {
   const version = currentVersion();
   let index = version?.items?.length ? version.items.length + 1 : 1;
-  while (version?.items?.some((item) => item.name === `新价格条目 ${index}`)) {
+  while (version?.items?.some((item) => item.name === `新价格条目 ${index}/项`)) {
     index += 1;
   }
-  return `新价格条目 ${index}`;
+  return `新价格条目 ${index}/项`;
 }
 
 function nextItemSortOrder(categoryId, excludeName = "") {
@@ -1098,15 +1492,34 @@ function renderTotalsAndPreview() {
   els.previewManagement.textContent = formatMoney(totals.management);
   els.previewTax.textContent = formatMoney(totals.tax);
   els.previewGrand.textContent = formatMoney(totals.grand);
-  els.previewRows.innerHTML = quote.lines.map((line, index) => {
+  let rowIndex = 0;
+  els.previewRows.innerHTML = sortedSpaces(quote).map((space) => {
+    const spaceLines = linesForSpace(quote, space.id);
+    if (!spaceLines.length) return "";
+    const meta = [
+      space.area ? `面积 ${formatNumber(space.area)}` : "",
+      space.perimeter ? `周长 ${formatNumber(space.perimeter)}` : "",
+      space.height ? `高度 ${formatNumber(space.height)}` : ""
+    ].filter(Boolean).join("　");
+    return `
+      <tr class="preview-space-row">
+        <td></td>
+        <td colspan="10"><strong>${escapeHtml(space.name)}</strong>${meta ? `<span>${escapeHtml(meta)}</span>` : ""}</td>
+      </tr>
+      ${spaceLines.map((line) => {
     const item = findItem(line.priceItemName, quote.priceVersionId);
     const unitPrice = calculateLineUnitPrice(line);
     const amount = toNumber(line.quantity) * unitPrice;
+    const processNote = processNoteForLine(line, quote.priceVersionId);
+    rowIndex += 1;
     return `
-      <tr>
-        <td>${index + 1}</td>
-        <td>${escapeHtml(line.engineeringName)}</td>
-        <td>${escapeHtml(line.area)}</td>
+      <tr class="preview-main-row">
+        <td>${rowIndex}</td>
+        <td>
+          <strong>${escapeHtml(line.engineeringName)}</strong>
+          ${line.area ? `<small>${escapeHtml(line.area)}</small>` : ""}
+        </td>
+        <td>${escapeHtml(space.name)}</td>
         <td>${escapeHtml(item?.unit || "")}</td>
         <td>${formatNumber(line.quantity)}</td>
         <td>${formatMoney(line.material)}</td>
@@ -1115,8 +1528,15 @@ function renderTotalsAndPreview() {
         <td>${formatMoney(line.labor)}</td>
         <td>${formatMoney(unitPrice)}</td>
         <td>${formatMoney(amount)}</td>
-        <td>${escapeHtml(line.note)}</td>
       </tr>
+      ${processNote ? `
+      <tr class="preview-note-row">
+        <td></td>
+        <td colspan="10"><span>工艺说明</span>${escapeHtml(processNote)}</td>
+      </tr>
+      ` : ""}
+    `;
+      }).join("")}
     `;
   }).join("");
 }
@@ -1138,8 +1558,17 @@ function calculateLineUnitPrice(line) {
   return splitPrice;
 }
 
+function calculateLineCostUnitPrice(line, versionId = currentQuote()?.priceVersionId || currentVersion()?.id) {
+  const item = findItem(line.priceItemName, versionId);
+  return item ? calculateItemCostUnitPrice(item) : 0;
+}
+
 function calculateItemUnitPrice(item) {
   return (toNumber(item.material) + toNumber(item.auxiliary)) * (1 + toNumber(item.wasteRate)) + toNumber(item.labor);
+}
+
+function calculateItemCostUnitPrice(item) {
+  return (toNumber(item.costMaterial) + toNumber(item.costAuxiliary)) * (1 + toNumber(item.costWasteRate)) + toNumber(item.costLabor);
 }
 
 function addCustomer() {
@@ -1168,10 +1597,94 @@ function addQuote() {
   switchPage("editor");
 }
 
-function addLine() {
+function addSpace() {
   const quote = currentQuote();
-  quote.lines.push(makeLine());
+  const name = prompt("空间名称", `空间 ${quote.spaces.length + 1}`);
+  if (name === null) return;
+  const space = makeSpace(String(name || "").trim() || `空间 ${quote.spaces.length + 1}`);
+  const area = prompt("面积（可空）", "");
+  if (area === null) return;
+  const perimeter = prompt("周长（可空）", "");
+  if (perimeter === null) return;
+  const height = prompt("高度（可空）", "");
+  if (height === null) return;
+  space.area = toNumber(area);
+  space.perimeter = toNumber(perimeter);
+  space.height = toNumber(height);
+  quote.spaces.push(space);
+  saveState("已添加空间");
+  renderAll();
+}
+
+function addLine(spaceId = "") {
+  const quote = currentQuote();
+  const targetSpaceId = spaceId || sortedSpaces(quote)[0]?.id || ensureDefaultSpace(quote).id;
+  quote.lines.push(makeLine("", "", 0, targetSpaceId));
   saveState("已添加工程项目");
+  renderAll();
+}
+
+function addLineAt(spaceId, position = 0) {
+  const quote = currentQuote();
+  const targetSpaceId = spaceId || sortedSpaces(quote)[0]?.id || ensureDefaultSpace(quote).id;
+  const newLine = makeLine("", "", 0, targetSpaceId);
+  const sameSpace = quote.lines
+    .map((line, index) => ({ line, index }))
+    .filter((entry) => entry.line.spaceId === targetSpaceId);
+  const insertBefore = sameSpace[position]?.index;
+  if (insertBefore === undefined) {
+    const lastSameSpace = sameSpace[sameSpace.length - 1]?.index;
+    quote.lines.splice(lastSameSpace === undefined ? quote.lines.length : lastSameSpace + 1, 0, newLine);
+  } else {
+    quote.lines.splice(insertBefore, 0, newLine);
+  }
+  saveState("已添加工程项目");
+  renderAll();
+}
+
+function ensureDefaultSpace(quote = currentQuote()) {
+  if (!quote.spaces?.length) quote.spaces = [makeSpace("全屋")];
+  return sortedSpaces(quote)[0];
+}
+
+function moveSpace(spaceId, direction) {
+  const quote = currentQuote();
+  const spaces = sortedSpaces(quote);
+  const index = spaces.findIndex((space) => space.id === spaceId);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= spaces.length) return;
+  [spaces[index], spaces[nextIndex]] = [spaces[nextIndex], spaces[index]];
+  spaces.forEach((space, sortIndex) => { space.sortOrder = sortIndex; });
+  quote.spaces = spaces;
+  saveState("已调整空间顺序");
+  renderAll();
+}
+
+function toggleSpace(spaceId) {
+  const quote = currentQuote();
+  const space = quote.spaces.find((entry) => entry.id === spaceId);
+  if (!space) return;
+  if (space.collapsed) {
+    quote.spaces.forEach((entry) => { entry.collapsed = entry.id !== spaceId; });
+  } else {
+    space.collapsed = true;
+  }
+  saveState(space.collapsed ? "已折叠空间" : "已展开空间");
+  renderLines();
+}
+
+function moveLineToSpace(lineId, targetSpaceId) {
+  const quote = currentQuote();
+  const lineIndex = quote.lines.findIndex((line) => line.id === lineId);
+  if (lineIndex < 0) return;
+  const [line] = quote.lines.splice(lineIndex, 1);
+  line.spaceId = targetSpaceId;
+  const targetIndexes = quote.lines
+    .map((entry, index) => ({ entry, index }))
+    .filter((item) => item.entry.spaceId === targetSpaceId);
+  const lastTargetIndex = targetIndexes[targetIndexes.length - 1]?.index;
+  quote.lines.splice(lastTargetIndex === undefined ? quote.lines.length : lastTargetIndex + 1, 0, line);
+  saveState("已移动工程项目");
   renderAll();
 }
 
@@ -1357,6 +1870,7 @@ ${item.name}`, "");
   version.items = version.items.filter((entry) => entry.name !== item.name);
   unlinkPriceItemFromQuotes(item.name, version.id);
   if (state.pendingPriceItemName === item.name) state.pendingPriceItemName = "";
+  if (state.expandedPriceItemName === item.name) state.expandedPriceItemName = "";
   saveState("删除价格条目");
   renderAll();
 }

@@ -66,6 +66,7 @@ function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS price_categories (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
+      description TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS price_items (
@@ -114,9 +115,22 @@ function initializeDatabase() {
       FOREIGN KEY (price_version_id) REFERENCES price_versions(id)
     );
     CREATE INDEX IF NOT EXISTS idx_quotes_customer ON quotes(customer_id);
+    CREATE TABLE IF NOT EXISTS quote_spaces (
+      id TEXT PRIMARY KEY,
+      quote_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      area REAL DEFAULT 0,
+      perimeter REAL DEFAULT 0,
+      height REAL DEFAULT 0,
+      collapsed INTEGER DEFAULT 0,
+      FOREIGN KEY (quote_id) REFERENCES quotes(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_quote_spaces_quote ON quote_spaces(quote_id, sort_order);
     CREATE TABLE IF NOT EXISTS quote_lines (
       id TEXT PRIMARY KEY,
       quote_id TEXT NOT NULL,
+      space_id TEXT,
       sort_order INTEGER NOT NULL,
       engineering_name TEXT,
       price_item_name TEXT,
@@ -128,14 +142,18 @@ function initializeDatabase() {
       labor REAL DEFAULT 0,
       legacy_unit_price REAL,
       note TEXT,
-      FOREIGN KEY (quote_id) REFERENCES quotes(id) ON DELETE CASCADE
+      FOREIGN KEY (quote_id) REFERENCES quotes(id) ON DELETE CASCADE,
+      FOREIGN KEY (space_id) REFERENCES quote_spaces(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS idx_quote_lines_quote ON quote_lines(quote_id, sort_order);
   `);
   ensureColumn("quotes", "client_phone", "TEXT");
   ensureColumn("quotes", "client_address", "TEXT");
+  ensureColumn("quote_lines", "space_id", "TEXT");
+  ensureColumn("quote_spaces", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("price_items", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("price_items", "category_id", "TEXT");
+  ensureColumn("price_categories", "description", "TEXT");
   ensureColumn("price_categories", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   db.exec("CREATE INDEX IF NOT EXISTS idx_price_items_category ON price_items(category_id)");
   migratePriceCategories();
@@ -155,15 +173,36 @@ function migratePriceCategories() {
     WHERE TRIM(COALESCE(category, '')) <> ''
     ORDER BY name COLLATE NOCASE
   `).all();
-  const insertCategory = db.prepare("INSERT OR IGNORE INTO price_categories (id, name, sort_order) VALUES (?, ?, ?)");
+  const insertCategory = db.prepare("INSERT OR IGNORE INTO price_categories (id, name, description, sort_order) VALUES (?, ?, ?, ?)");
   const findCategory = db.prepare("SELECT id FROM price_categories WHERE name = ?");
   const updateItems = db.prepare("UPDATE price_items SET category_id = ? WHERE TRIM(COALESCE(category, '')) = ?");
+  const updateCategoryDescription = db.prepare("UPDATE price_categories SET description = COALESCE(NULLIF(description, ''), ?) WHERE id = ?");
 
   categoryRows.forEach(({ name }, index) => {
-    insertCategory.run(makeId("category"), name, index);
+    const description = summarizeCategoryDescription(name);
+    insertCategory.run(makeId("category"), name, description, index);
     const category = findCategory.get(name);
-    if (category?.id) updateItems.run(category.id, name);
+    if (category?.id) {
+      updateItems.run(category.id, name);
+      updateCategoryDescription.run(description, category.id);
+    }
   });
+}
+
+function summarizeCategoryDescription(categoryName) {
+  const rows = db.prepare(`
+    SELECT description
+    FROM price_items
+    WHERE TRIM(COALESCE(category, '')) = ?
+      AND TRIM(COALESCE(description, '')) <> ''
+  `).all(categoryName);
+  const counter = new Map();
+  rows.forEach(({ description }) => {
+    const text = String(description || "").trim();
+    if (!text) return;
+    counter.set(text, (counter.get(text) || 0) + 1);
+  });
+  return [...counter.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] || "";
 }
 
 async function migrateLegacyJsonIfNeeded() {
@@ -224,7 +263,7 @@ function loadPriceVersions() {
       price_items.name, unit, material, waste_rate AS wasteRate, auxiliary, labor,
       price_items.category_id AS categoryId,
       COALESCE(price_categories.name, price_items.category, '') AS category,
-      description,
+      price_items.description AS description,
       cost_material AS costMaterial, cost_waste_rate AS costWasteRate,
       cost_auxiliary AS costAuxiliary, cost_labor AS costLabor,
       unit_price AS unitPrice, cost_unit_price AS costUnitPrice
@@ -237,7 +276,7 @@ function loadPriceVersions() {
 }
 
 function loadPriceCategories() {
-  return db.prepare("SELECT id, name, sort_order AS sortOrder FROM price_categories ORDER BY sort_order, rowid").all();
+  return db.prepare("SELECT id, name, description, sort_order AS sortOrder FROM price_categories ORDER BY sort_order, rowid").all();
 }
 
 function loadQuotes() {
@@ -251,16 +290,22 @@ function loadQuotes() {
     FROM quotes
     ORDER BY rowid
   `).all();
+  const spaces = db.prepare(`
+    SELECT id, name, area, perimeter, height, collapsed, sort_order AS sortOrder
+    FROM quote_spaces
+    WHERE quote_id = ?
+    ORDER BY sort_order
+  `);
   const lines = db.prepare(`
     SELECT
-      id, engineering_name AS engineeringName, price_item_name AS priceItemName,
+      id, space_id AS spaceId, engineering_name AS engineeringName, price_item_name AS priceItemName,
       area, quantity, material, auxiliary, waste_rate AS wasteRate, labor,
       legacy_unit_price AS legacyUnitPrice, note
     FROM quote_lines
     WHERE quote_id = ?
     ORDER BY sort_order
   `);
-  return quotes.map((quote) => ({ ...quote, lines: lines.all(quote.id) }));
+  return quotes.map((quote) => ({ ...quote, spaces: spaces.all(quote.id), lines: lines.all(quote.id) }));
 }
 
 function savePortableState(portable) {
@@ -274,6 +319,7 @@ function savePortableState(portable) {
   try {
     db.exec(`
       DELETE FROM quote_lines;
+      DELETE FROM quote_spaces;
       DELETE FROM quotes;
       DELETE FROM customers;
       DELETE FROM price_items;
@@ -298,11 +344,16 @@ function savePortableState(portable) {
 }
 
 function insertPriceCategories(categories) {
-  const insertCategory = db.prepare("INSERT INTO price_categories (id, name, sort_order) VALUES (?, ?, ?)");
+  const insertCategory = db.prepare("INSERT INTO price_categories (id, name, description, sort_order) VALUES (?, ?, ?, ?)");
   categories.forEach((category, index) => {
     const name = String(category?.name || "").trim();
     if (!name) return;
-    insertCategory.run(category.id || makeId("category"), name, Number.isFinite(Number(category?.sortOrder)) ? Number(category.sortOrder) : index);
+    insertCategory.run(
+      category.id || makeId("category"),
+      name,
+      String(category?.description || "").trim(),
+      Number.isFinite(Number(category?.sortOrder)) ? Number(category.sortOrder) : index
+    );
   });
 }
 
@@ -350,7 +401,7 @@ function deriveCategoriesFromVersions(versions) {
     (version.items || []).forEach((item) => {
       const name = String(item.category || "").trim();
       if (!name || categories.has(name)) return;
-      categories.set(name, { id: makeId("category"), name, sortOrder: categories.size });
+      categories.set(name, { id: makeId("category"), name, description: "", sortOrder: categories.size });
     });
   });
   return [...categories.values()];
@@ -372,9 +423,14 @@ function insertQuotes(quotes) {
   `);
   const insertLine = db.prepare(`
     INSERT INTO quote_lines (
-      id, quote_id, sort_order, engineering_name, price_item_name, area, quantity,
+      id, quote_id, space_id, sort_order, engineering_name, price_item_name, area, quantity,
       material, auxiliary, waste_rate, labor, legacy_unit_price, note
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertSpace = db.prepare(`
+    INSERT INTO quote_spaces (
+      id, quote_id, sort_order, name, area, perimeter, height, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   quotes.forEach((quote) => {
     insertQuote.run(
@@ -390,10 +446,23 @@ function insertQuotes(quotes) {
       toNumber(quote.managementRate),
       toNumber(quote.taxRate)
     );
+    (quote.spaces || []).forEach((space, index) => {
+      insertSpace.run(
+        space.id,
+        quote.id,
+        Number.isFinite(Number(space.sortOrder)) ? Number(space.sortOrder) : index,
+        space.name || "全屋",
+        toNumber(space.area),
+        toNumber(space.perimeter),
+        toNumber(space.height),
+        space.collapsed ? 1 : 0
+      );
+    });
     (quote.lines || []).forEach((line, index) => {
       insertLine.run(
         line.id,
         quote.id,
+        line.spaceId || null,
         index,
         line.engineeringName || line.itemName || line.priceItemName || "",
         line.priceItemName || line.itemName || "",
