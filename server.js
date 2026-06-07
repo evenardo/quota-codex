@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
-import { readFile, mkdir } from "node:fs/promises";
+import { copyFile, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +11,7 @@ const dataDir = path.join(__dirname, "data");
 const sqliteFile = path.join(dataDir, "quote-data.sqlite");
 const initialPricesFile = path.join(publicDir, "data", "initial-prices.json");
 const port = Number(process.env.PORT || 5177);
+const DEFAULT_QUANTITY_FORMULA = "q=s+c*(h-0.25)";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -37,6 +38,10 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === "/api/data" && req.method === "POST") {
       await handlePostData(req, res);
+      return;
+    }
+    if (url.pathname === "/api/backup" && req.method === "POST") {
+      await handleBackupDatabase(res);
       return;
     }
     await serveStatic(url.pathname, res);
@@ -88,6 +93,7 @@ function initializeDatabase() {
       cost_labor REAL DEFAULT 0,
       unit_price REAL DEFAULT 0,
       cost_unit_price REAL DEFAULT 0,
+      quantity_formula TEXT,
       FOREIGN KEY (version_id) REFERENCES price_versions(id) ON DELETE CASCADE,
       FOREIGN KEY (category_id) REFERENCES price_categories(id)
     );
@@ -110,6 +116,7 @@ function initializeDatabase() {
       quote_date TEXT,
       price_version_id TEXT,
       management_rate REAL DEFAULT 0,
+      design_rate REAL DEFAULT 0,
       tax_rate REAL DEFAULT 0,
       FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
       FOREIGN KEY (price_version_id) REFERENCES price_versions(id)
@@ -120,9 +127,11 @@ function initializeDatabase() {
       quote_id TEXT NOT NULL,
       sort_order INTEGER NOT NULL,
       name TEXT NOT NULL,
+      type TEXT DEFAULT 'space',
       area REAL DEFAULT 0,
       perimeter REAL DEFAULT 0,
       height REAL DEFAULT 0,
+      building_area REAL DEFAULT 0,
       collapsed INTEGER DEFAULT 0,
       FOREIGN KEY (quote_id) REFERENCES quotes(id) ON DELETE CASCADE
     );
@@ -149,10 +158,14 @@ function initializeDatabase() {
   `);
   ensureColumn("quotes", "client_phone", "TEXT");
   ensureColumn("quotes", "client_address", "TEXT");
+  ensureColumn("quotes", "design_rate", "REAL DEFAULT 0");
   ensureColumn("quote_lines", "space_id", "TEXT");
+  ensureColumn("quote_spaces", "type", "TEXT DEFAULT 'space'");
+  ensureColumn("quote_spaces", "building_area", "REAL DEFAULT 0");
   ensureColumn("quote_spaces", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("price_items", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("price_items", "category_id", "TEXT");
+  ensureColumn("price_items", "quantity_formula", "TEXT");
   ensureColumn("price_categories", "description", "TEXT");
   ensureColumn("price_categories", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   db.exec("CREATE INDEX IF NOT EXISTS idx_price_items_category ON price_items(category_id)");
@@ -234,6 +247,26 @@ async function handlePostData(req, res) {
   sendJson(res, 200, { ok: true, path: sqliteFile });
 }
 
+async function handleBackupDatabase(res) {
+  const backupDir = path.join(dataDir, "backups");
+  await mkdir(backupDir, { recursive: true });
+  const backupFile = path.join(backupDir, `quote-data-${formatBackupTimestamp(new Date())}.sqlite`);
+  await copyFile(sqliteFile, backupFile);
+  sendJson(res, 200, { ok: true, path: backupFile });
+}
+
+function formatBackupTimestamp(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds())
+  ].join("");
+}
+
 function loadPortableState() {
   const data = {
     versions: loadPriceVersions(),
@@ -266,7 +299,8 @@ function loadPriceVersions() {
       price_items.description AS description,
       cost_material AS costMaterial, cost_waste_rate AS costWasteRate,
       cost_auxiliary AS costAuxiliary, cost_labor AS costLabor,
-      unit_price AS unitPrice, cost_unit_price AS costUnitPrice
+      unit_price AS unitPrice, cost_unit_price AS costUnitPrice,
+      quantity_formula AS quantityFormula
     FROM price_items
     LEFT JOIN price_categories ON price_categories.id = price_items.category_id
     WHERE version_id = ?
@@ -286,12 +320,12 @@ function loadQuotes() {
       client_name AS clientName, client_phone AS clientPhone, client_address AS clientAddress,
       quote_date AS quoteDate,
       price_version_id AS priceVersionId,
-      management_rate AS managementRate, tax_rate AS taxRate
+      management_rate AS managementRate, design_rate AS designRate, tax_rate AS taxRate
     FROM quotes
     ORDER BY rowid
   `).all();
   const spaces = db.prepare(`
-    SELECT id, name, area, perimeter, height, collapsed, sort_order AS sortOrder
+    SELECT id, name, type, area, perimeter, height, building_area AS buildingArea, collapsed, sort_order AS sortOrder
     FROM quote_spaces
     WHERE quote_id = ?
     ORDER BY sort_order
@@ -362,8 +396,8 @@ function insertPriceVersions(versions, categories) {
   const insertItem = db.prepare(`
     INSERT INTO price_items (
       version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
-      cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price, quantity_formula
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const categoryById = new Map((categories || []).map((category) => [category.id, category.name]));
   const categoryByName = new Map((categories || []).map((category) => [String(category.name || "").trim(), category.id]));
@@ -389,7 +423,8 @@ function insertPriceVersions(versions, categories) {
         toNumber(item.costWasteRate),
         toNumber(item.costLabor),
         toNumber(item.unitPrice),
-        toNumber(item.costUnitPrice)
+        toNumber(item.costUnitPrice),
+        item.quantityFormula || DEFAULT_QUANTITY_FORMULA
       );
     });
   });
@@ -418,8 +453,8 @@ function insertQuotes(quotes) {
   const insertQuote = db.prepare(`
     INSERT INTO quotes (
       id, customer_id, name, project_name, client_name, client_phone, client_address, quote_date,
-      price_version_id, management_rate, tax_rate
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      price_version_id, management_rate, design_rate, tax_rate
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertLine = db.prepare(`
     INSERT INTO quote_lines (
@@ -429,8 +464,8 @@ function insertQuotes(quotes) {
   `);
   const insertSpace = db.prepare(`
     INSERT INTO quote_spaces (
-      id, quote_id, sort_order, name, area, perimeter, height, collapsed
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      id, quote_id, sort_order, name, type, area, perimeter, height, building_area, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   quotes.forEach((quote) => {
     insertQuote.run(
@@ -444,6 +479,7 @@ function insertQuotes(quotes) {
       quote.quoteDate || "",
       quote.priceVersionId || "",
       toNumber(quote.managementRate),
+      toNumber(quote.designRate),
       toNumber(quote.taxRate)
     );
     (quote.spaces || []).forEach((space, index) => {
@@ -452,9 +488,11 @@ function insertQuotes(quotes) {
         quote.id,
         Number.isFinite(Number(space.sortOrder)) ? Number(space.sortOrder) : index,
         space.name || "全屋",
+        space.type === "overall" ? "overall" : "space",
         toNumber(space.area),
         toNumber(space.perimeter),
         toNumber(space.height),
+        toNumber(space.buildingArea),
         space.collapsed ? 1 : 0
       );
     });

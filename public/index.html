@@ -22,7 +22,7 @@
       <button id="exportDataBtn" type="button" class="ghost">导出数据</button>
       <button id="importDataBtn" type="button" class="ghost">导入数据</button>
       <button id="printBtn" type="button">导出 PDF</button>
-      <button id="resetBtn" class="ghost" type="button">恢复初始</button>
+      <button id="resetBtn" class="ghost" type="button">备份数据库</button>
       <input id="importDataFile" type="file" accept="application/json,.json" hidden>
     </div>
   </header>
@@ -72,15 +72,20 @@
           </div>
           <div class="field compact">
             <label for="managementRate">管理费</label>
-            <input id="managementRate" type="number" min="0" step="0.1" value="3">
+            <input id="managementRate" type="number" min="0" step="0.1" value="8">
+          </div>
+          <div class="field compact">
+            <label for="designRate">设计费</label>
+            <input id="designRate" type="number" min="0" step="0.1" value="6">
           </div>
           <div class="field compact">
             <label for="taxRate">税金</label>
-            <input id="taxRate" type="number" min="0" step="0.1" value="1">
+            <input id="taxRate" type="number" min="0" step="0.1" value="9">
           </div>
           <div class="totals">
             <div><span>小计</span><strong id="subtotalText">¥0.00</strong></div>
             <div><span>管理费</span><strong id="managementText">¥0.00</strong></div>
+            <div><span>设计费</span><strong id="designText">¥0.00</strong></div>
             <div><span>税金</span><strong id="taxText">¥0.00</strong></div>
             <div class="grand"><span>总额</span><strong id="grandTotalText">¥0.00</strong></div>
           </div>
@@ -90,6 +95,7 @@
           <div class="section-title">
             <h2>工程项目</h2>
             <div class="button-row">
+              <button id="addOverallSpaceBtn" class="ghost" type="button">添加整体</button>
               <button id="addSpaceBtn" class="ghost" type="button">添加空间</button>
               <button id="addLineBtn" type="button">添加工程项目</button>
             </div>
@@ -101,7 +107,7 @@
           <div class="quote-paper">
             <div class="quote-head">
               <div>
-                <h2 id="previewTitle">报价单</h2>
+                <h2 id="previewTitle">工程量</h2>
                 <p id="previewMeta">报价日期：</p>
               </div>
               <strong id="previewTotal">¥0.00</strong>
@@ -111,9 +117,8 @@
                 <tr>
                   <th>序号</th>
                   <th>工程项目</th>
-                  <th>区域</th>
-                  <th>单位</th>
                   <th>工程量</th>
+                  <th>单位</th>
                   <th>主材</th>
                   <th>辅材</th>
                   <th>损耗%</th>
@@ -127,6 +132,7 @@
             <div class="preview-summary">
               <div><span>工程小计</span><strong id="previewSubtotal">¥0.00</strong></div>
               <div><span>项目管理费</span><strong id="previewManagement">¥0.00</strong></div>
+              <div><span>设计费</span><strong id="previewDesign">¥0.00</strong></div>
               <div><span>税金</span><strong id="previewTax">¥0.00</strong></div>
               <div><span>报价总额</span><strong id="previewGrand">¥0.00</strong></div>
             </div>
