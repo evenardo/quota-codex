@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -9,8 +10,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const dataDir = path.join(__dirname, "data");
 const sqliteFile = path.join(dataDir, "quote-data.sqlite");
-const initialPricesFile = path.join(publicDir, "data", "initial-prices.json");
+const backupDir = path.join(dataDir, "backups");
 const port = Number(process.env.PORT || 5177);
+const backupIntervalMinutes = Number(process.env.BACKUP_INTERVAL_MINUTES || 60);
+const automaticBackupKeep = Number(process.env.BACKUP_KEEP || 48);
 const DEFAULT_QUANTITY_FORMULA = "q=s+c*(h-0.25)";
 
 const mimeTypes = {
@@ -27,12 +30,17 @@ const mimeTypes = {
 await mkdir(dataDir, { recursive: true });
 const db = new DatabaseSync(sqliteFile);
 initializeDatabase();
-await migrateLegacyJsonIfNeeded();
 
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
     if (url.pathname === "/api/data" && req.method === "GET") {
+      if (!databaseHasWorkingData()) {
+        sendJson(res, 409, {
+          error: "SQLite 数据库没有可用工费版本。请从 data/backups 中恢复 quote-data.sqlite 备份。"
+        });
+        return;
+      }
       sendJson(res, 200, loadPortableState());
       return;
     }
@@ -53,8 +61,10 @@ const server = createServer(async (req, res) => {
 server.listen(port, "127.0.0.1", () => {
   console.log(`报价系统已启动：http://127.0.0.1:${port}`);
   console.log(`SQLite 数据库：${sqliteFile}`);
-  console.log("当前版本使用 SQLite 分表存储，不再把工作数据写回 quote-data.json。");
+  console.log("Data source: SQLite tables. JSON seed files are not used.");
 });
+
+scheduleAutomaticBackups();
 
 function initializeDatabase() {
   migrateReadableDatabaseNames();
@@ -76,7 +86,7 @@ function initializeDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS labor_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT PRIMARY KEY,
       version_id TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
       name TEXT NOT NULL,
@@ -244,6 +254,7 @@ function initializeDatabase() {
   ensureColumn("quote_items", "material_id", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_labor_items_category ON labor_items(category_id)");
   migratePriceCategories();
+  migrateIdsToUuidV7();
 }
 
 function migrateReadableDatabaseNames() {
@@ -323,26 +334,176 @@ function summarizeCategoryDescription(categoryName) {
   return [...counter.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] || "";
 }
 
-async function migrateLegacyJsonIfNeeded() {
-  const count = db.prepare("SELECT COUNT(*) AS count FROM price_versions").get().count;
-  if (count > 0) return;
+function migrateIdsToUuidV7() {
+  if (getAppState("uuidv7IdsMigrated") === "true") return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN");
+  try {
+    const versionMap = migrateTextPrimaryKey("price_versions", "version");
+    updateForeignKeys("labor_items", "version_id", versionMap);
+    updateForeignKeys("quotes", "price_version_id", versionMap);
+    updateAppStateValue("activeVersionId", versionMap);
 
-  const initial = JSON.parse(await readFile(initialPricesFile, "utf8"));
-  savePortableState({
-    app: "quote-tool",
-    version: 4,
-    exportedAt: new Date().toISOString(),
-    data: {
-      versions: initial.versions,
-      categories: deriveCategoriesFromVersions(initial.versions),
-      activeVersionId: initial.versions[0]?.id || "",
-      activePage: "manager",
-      customers: [],
-      quotes: [],
-      activeCustomerId: "",
-      activeQuoteId: ""
+    const categoryMap = migrateTextPrimaryKey("labor_categories", "category");
+    updateForeignKeys("labor_items", "category_id", categoryMap);
+
+    const materialMap = migrateTextPrimaryKey("materials", "material");
+    updateForeignKeys("quote_items", "material_id", materialMap);
+    updateForeignKeys("project_group_template_items", "material_id", materialMap);
+    updateForeignKeys("labor_items", "default_material_id", materialMap);
+
+    const templateMap = migrateTextPrimaryKey("project_group_templates", "template");
+    updateForeignKeys("project_group_template_items", "template_id", templateMap);
+    updateForeignKeys("quote_project_groups", "template_id", templateMap);
+
+    migrateTextPrimaryKey("project_group_template_items", "template-item");
+
+    const customerMap = migrateTextPrimaryKey("customers", "customer");
+    updateForeignKeys("quotes", "customer_id", customerMap);
+    updateAppStateValue("activeCustomerId", customerMap);
+
+    const quoteMap = migrateTextPrimaryKey("quotes", "quote");
+    updateForeignKeys("quote_project_groups", "quote_id", quoteMap);
+    updateForeignKeys("quote_items", "quote_id", quoteMap);
+    updateAppStateValue("activeQuoteId", quoteMap);
+
+    const groupMap = migrateTextPrimaryKey("quote_project_groups", "group");
+    updateForeignKeys("quote_items", "project_group_id", groupMap);
+
+    migrateTextPrimaryKey("quote_items", "item");
+    migrateLaborItemsToUuidV7();
+
+    const violations = db.prepare("PRAGMA foreign_key_check").all();
+    if (violations.length) {
+      throw new Error(`UUIDv7 migration left ${violations.length} foreign key violation(s)`);
     }
+    setAppStateReplace("uuidv7IdsMigrated", "true");
+    db.exec("COMMIT");
+    db.exec("PRAGMA foreign_keys = ON");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.exec("PRAGMA foreign_keys = ON");
+    throw error;
+  }
+}
+
+function migrateTextPrimaryKey(table, prefix) {
+  if (!tableExists(table)) return new Map();
+  const rows = db.prepare(`SELECT id FROM ${table}`).all();
+  const map = new Map();
+  const update = db.prepare(`UPDATE ${table} SET id = ? WHERE id = ?`);
+  rows.forEach(({ id }) => {
+    const current = String(id || "");
+    if (isPrefixedUuidV7(current, prefix)) return;
+    const next = makeId(prefix);
+    map.set(current, next);
+    update.run(next, current);
   });
+  return map;
+}
+
+function migrateLaborItemsToUuidV7() {
+  if (!tableExists("labor_items")) return;
+  const columns = db.prepare("PRAGMA table_info(labor_items)").all();
+  const idColumn = columns.find((column) => column.name === "id");
+  const idIsText = String(idColumn?.type || "").toUpperCase().includes("TEXT");
+  const invalidRows = db.prepare("SELECT COUNT(*) AS count FROM labor_items WHERE id NOT LIKE 'labor-%'").get().count;
+  if (idIsText && invalidRows === 0) return;
+
+  db.exec(`
+    CREATE TABLE labor_items_uuidv7 (
+      id TEXT PRIMARY KEY,
+      version_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      name TEXT NOT NULL,
+      unit TEXT,
+      category TEXT,
+      category_id TEXT,
+      description TEXT,
+      material REAL DEFAULT 0,
+      auxiliary REAL DEFAULT 0,
+      waste_rate REAL DEFAULT 0,
+      labor REAL DEFAULT 0,
+      cost_material REAL DEFAULT 0,
+      cost_auxiliary REAL DEFAULT 0,
+      cost_waste_rate REAL DEFAULT 0,
+      cost_labor REAL DEFAULT 0,
+      unit_price REAL DEFAULT 0,
+      cost_unit_price REAL DEFAULT 0,
+      quantity_formula TEXT,
+      uses_material INTEGER DEFAULT 0,
+      material_category TEXT,
+      material_subcategory TEXT,
+      default_material_id TEXT,
+      FOREIGN KEY (version_id) REFERENCES price_versions(id) ON DELETE CASCADE,
+      FOREIGN KEY (category_id) REFERENCES labor_categories(id)
+    )
+  `);
+  const rows = db.prepare("SELECT * FROM labor_items ORDER BY rowid").all();
+  const insert = db.prepare(`
+    INSERT INTO labor_items_uuidv7 (
+      id, version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
+      cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price, quantity_formula,
+      uses_material, material_category, material_subcategory, default_material_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  rows.forEach((row) => {
+    const currentId = String(row.id || "");
+    insert.run(
+      isPrefixedUuidV7(currentId, "labor") ? currentId : makeId("labor"),
+      row.version_id,
+      toNumber(row.sort_order),
+      row.name || "",
+      row.unit || "",
+      row.category || "",
+      row.category_id || "",
+      row.description || "",
+      toNumber(row.material),
+      toNumber(row.auxiliary),
+      toNumber(row.waste_rate),
+      toNumber(row.labor),
+      toNumber(row.cost_material),
+      toNumber(row.cost_auxiliary),
+      toNumber(row.cost_waste_rate),
+      toNumber(row.cost_labor),
+      toNumber(row.unit_price),
+      toNumber(row.cost_unit_price),
+      row.quantity_formula || DEFAULT_QUANTITY_FORMULA,
+      row.uses_material ? 1 : 0,
+      row.material_category || "",
+      row.material_subcategory || "",
+      row.default_material_id || ""
+    );
+  });
+  db.exec(`
+    DROP TABLE labor_items;
+    ALTER TABLE labor_items_uuidv7 RENAME TO labor_items;
+    CREATE INDEX IF NOT EXISTS idx_labor_items_version ON labor_items(version_id);
+    CREATE INDEX IF NOT EXISTS idx_labor_items_category ON labor_items(category_id);
+  `);
+}
+
+function updateForeignKeys(table, column, idMap) {
+  if (!idMap.size || !tableExists(table)) return;
+  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`);
+  idMap.forEach((nextId, oldId) => update.run(nextId, oldId));
+}
+
+function updateAppStateValue(key, idMap) {
+  const current = getAppState(key);
+  if (current && idMap.has(current)) setAppStateReplace(key, idMap.get(current));
+}
+
+function setAppStateReplace(key, value) {
+  db.prepare("INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)").run(key, String(value ?? ""));
+}
+
+function isPrefixedUuidV7(value, prefix) {
+  return new RegExp(`^${prefix}-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, "i").test(String(value || ""));
+}
+
+function databaseHasWorkingData() {
+  return db.prepare("SELECT COUNT(*) AS count FROM price_versions").get().count > 0;
 }
 
 async function handlePostData(req, res) {
@@ -353,15 +514,54 @@ async function handlePostData(req, res) {
 }
 
 async function handleBackupDatabase(res) {
-  const backupDir = path.join(dataDir, "backups");
-  await mkdir(backupDir, { recursive: true });
-  const backupFile = path.join(backupDir, `quote-data-${formatBackupTimestamp(new Date())}.sqlite`);
-  await copyFile(sqliteFile, backupFile);
+  const backupFile = await createSqliteBackup("manual");
   sendJson(res, 200, { ok: true, path: backupFile });
+}
+
+function scheduleAutomaticBackups() {
+  if (!Number.isFinite(backupIntervalMinutes) || backupIntervalMinutes <= 0) return;
+  const intervalMs = backupIntervalMinutes * 60 * 1000;
+  setTimeout(() => runAutomaticBackup(), 5000);
+  setInterval(() => runAutomaticBackup(), intervalMs);
+}
+
+async function runAutomaticBackup() {
+  try {
+    if (!databaseHasWorkingData()) return;
+    const backupFile = await createSqliteBackup("auto");
+    await cleanupAutomaticBackups();
+    console.log(`Auto backup created: ${backupFile}`);
+  } catch (error) {
+    console.error(`Auto backup failed: ${error.message || error}`);
+  }
+}
+
+async function createSqliteBackup(kind) {
+  await mkdir(backupDir, { recursive: true });
+  const backupFile = path.join(backupDir, `quote-data-${kind}-${formatBackupTimestamp(new Date())}.sqlite`);
+  db.exec("PRAGMA wal_checkpoint(FULL)");
+  db.exec(`VACUUM INTO ${quoteSqliteString(backupFile)}`);
+  return backupFile;
+}
+
+async function cleanupAutomaticBackups() {
+  if (!Number.isFinite(automaticBackupKeep) || automaticBackupKeep <= 0) return;
+  const files = await readdir(backupDir);
+  const automaticBackups = files
+    .filter((file) => /^quote-data-auto-\d{17}\.sqlite$/i.test(file))
+    .sort()
+    .reverse();
+  const expiredBackups = automaticBackups.slice(automaticBackupKeep);
+  await Promise.all(expiredBackups.map((file) => unlink(path.join(backupDir, file))));
+}
+
+function quoteSqliteString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
 }
 
 function formatBackupTimestamp(date) {
   const pad = (value) => String(value).padStart(2, "0");
+  const ms = String(date.getMilliseconds()).padStart(3, "0");
   return [
     date.getFullYear(),
     pad(date.getMonth() + 1),
@@ -369,6 +569,7 @@ function formatBackupTimestamp(date) {
     pad(date.getHours()),
     pad(date.getMinutes()),
     pad(date.getSeconds())
+    + ms
   ].join("");
 }
 
@@ -399,6 +600,7 @@ function loadPriceVersions() {
   const versions = db.prepare("SELECT id, name, created_at AS createdAt FROM price_versions ORDER BY rowid").all();
   const items = db.prepare(`
     SELECT
+      labor_items.id,
       labor_items.sort_order AS sortOrder,
       labor_items.name, unit, material, waste_rate AS wasteRate, auxiliary, labor,
       labor_items.category_id AS categoryId,
@@ -550,10 +752,10 @@ function insertPriceVersions(versions, categories) {
   const insertVersion = db.prepare("INSERT INTO price_versions (id, name, created_at) VALUES (?, ?, ?)");
   const insertItem = db.prepare(`
     INSERT INTO labor_items (
-      version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
+      id, version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
       cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price, quantity_formula,
       uses_material, material_category, material_subcategory, default_material_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const categoryById = new Map((categories || []).map((category) => [category.id, category.name]));
   const categoryByName = new Map((categories || []).map((category) => [String(category.name || "").trim(), category.id]));
@@ -563,6 +765,7 @@ function insertPriceVersions(versions, categories) {
       const categoryName = String(item.category || "").trim();
       const categoryId = item.categoryId || (categoryName ? categoryByName.get(categoryName) : "") || null;
       insertItem.run(
+        item.id || makeId("labor"),
         version.id,
         Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index,
         item.name || "",
@@ -820,5 +1023,20 @@ function toNumber(value) {
 }
 
 function makeId(prefix) {
-  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${uuidV7()}`;
+}
+
+function uuidV7() {
+  const bytes = randomBytes(16);
+  const timestamp = BigInt(Date.now());
+  bytes[0] = Number((timestamp >> 40n) & 0xffn);
+  bytes[1] = Number((timestamp >> 32n) & 0xffn);
+  bytes[2] = Number((timestamp >> 24n) & 0xffn);
+  bytes[3] = Number((timestamp >> 16n) & 0xffn);
+  bytes[4] = Number((timestamp >> 8n) & 0xffn);
+  bytes[5] = Number(timestamp & 0xffn);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

@@ -5,6 +5,8 @@ const DEFAULT_DESIGN_RATE = 6;
 const DEFAULT_TAX_RATE = 9;
 const DEFAULT_QUANTITY_FORMULA = "q=s+c*(h-0.25)";
 const MATERIAL_PRIMARY_CATEGORIES = ["砖", "门", "柜子", "板材", "洁具", "五金", "其他"];
+
+// 项目组合图标只影响界面识别感，不参与报价计算和数据库关系。
 const PROJECT_GROUP_ICONS = [
   { key: "home", label: "整体" },
   { key: "room", label: "房间" },
@@ -16,6 +18,7 @@ const PROJECT_GROUP_ICONS = [
   { key: "tool", label: "施工" }
 ];
 
+// 前端单一状态树：所有页面都从这里读取，再通过 saveState 写回 SQLite。
 const state = {
   versions: [],
   categories: [],
@@ -47,6 +50,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   renderAll();
 });
 
+// DOM 节点集中缓存，后续渲染和事件绑定都从 els 取，避免重复查询。
 function bindElements() {
   [
     "saveStatus", "saveAllBtn", "printBtn", "resetBtn", "addCustomerBtn", "addQuoteBtn",
@@ -65,11 +69,20 @@ function bindElements() {
   });
 }
 
+// 数据载入顺序：Node/SQLite 是唯一正式数据源；HTTP 模式下禁止回退到浏览器缓存。
 async function loadState() {
   const serverState = await loadStateFromServer();
   if (serverState) {
     Object.assign(state, serverState);
     normalizeState();
+    return;
+  }
+
+  if (location.protocol !== "file:") {
+    state.loadBlocked = true;
+    if (els.saveStatus) {
+      els.saveStatus.textContent = "未载入 SQLite 数据。为避免回到旧数据，请检查 Node 服务或恢复数据库备份。";
+    }
     return;
   }
 
@@ -80,19 +93,15 @@ async function loadState() {
     return;
   }
 
-  const initial = await loadInitialPrices();
-  state.versions = initial.versions;
-  state.activeVersionId = state.versions[0].id;
-
   const old = localStorage.getItem(OLD_STORAGE_KEY);
   if (old) {
     migrateOldState(JSON.parse(old));
   } else {
-    createStarterData();
+    throw new Error("未找到本地数据。请使用 http://127.0.0.1:5177 打开，并从 SQLite 数据库读取。");
   }
-  saveState("已载入数据");
 }
 
+// 兼容早期 localStorage 单报价结构，仅在 file:// 且没有服务端数据时使用。
 function migrateOldState(oldState) {
   state.versions = oldState.versions?.length ? oldState.versions : state.versions;
   state.activeVersionId = oldState.activeVersionId || state.activeVersionId;
@@ -113,6 +122,7 @@ function migrateOldState(oldState) {
   state.activeQuoteId = quote.id;
 }
 
+// 仅保留为旧兜底流程使用；正常 Node/SQLite 模式不会再创建演示数据。
 function createStarterData() {
   const customer = normalizeCustomer({ id: makeId("customer"), name: "默认客户" });
   const quote = normalizeQuote({
@@ -134,6 +144,7 @@ function createStarterData() {
   state.activeQuoteId = quote.id;
 }
 
+// 统一修正载入后的数据形状，所有旧字段、缺省字段都在这里补齐。
 function normalizeState() {
   state.versions = state.versions?.length ? state.versions : [];
   state.categories = normalizeCategories([...(state.categories || []), ...deriveCategoriesFromVersions(state.versions)]);
@@ -229,6 +240,7 @@ function normalizeLaborItem(item, index = 0) {
   const { materialSubcategory, ...rest } = item || {};
   return {
     ...rest,
+    id: item?.id || makeId("labor"),
     sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index,
     categoryId: category?.id || "",
     category: category?.name || categoryName,
@@ -308,6 +320,7 @@ function normalizeCustomer(customer) {
   };
 }
 
+// 案例报价的主结构：quote.spaces 是项目组合，quote.lines 是组合里的报价条目。
 function normalizeQuote(quote) {
   const customer = state.customers.find((item) => item.id === quote.customerId);
   const hasDesignRate = quote.designRate !== undefined && quote.designRate !== null;
@@ -340,6 +353,7 @@ function normalizeQuote(quote) {
   return normalized;
 }
 
+// 页面重新载入时才按库顺序整理条目；用户新添加条目时先保留插入位置。
 function sortQuoteItemsForReload(quote) {
   const categoryIndex = new Map(currentCategories().map((category, index) => [category.id, index]));
   const version = state.versions.find((item) => item.id === quote.priceVersionId) || state.versions[0];
@@ -382,6 +396,7 @@ function sortQuoteItemsForReload(quote) {
   return sortedLines.concat((quote.lines || []).filter((line) => !knownSpaceIds.has(line.spaceId)));
 }
 
+// 项目组合仍沿用旧字段名 spaces/spaceId 做前端兼容，界面含义是“项目组合”。
 function normalizeProjectGroups(spaces, lines = []) {
   const hasCollapsedState = (spaces || []).some((space) => Object.prototype.hasOwnProperty.call(space || {}, "collapsed"));
   const normalized = (spaces || []).map((space, index) => normalizeProjectGroup(space, index)).filter((space) => space.name);
@@ -423,7 +438,7 @@ function normalizeProjectGroup(space, index = 0) {
   const wasOverall = space.type === "overall" || String(space.name || "").trim() === "整体";
   const area = toNumber(space.area) || (wasOverall ? toNumber(space.buildingArea) : 0);
   return {
-    id: space.id || makeId("space"),
+    id: space.id || makeId("group"),
     name: String(space.name || "项目组合").trim() || "项目组合",
     type: "space",
     workType: space.workType === "material" ? "material" : "labor",
@@ -439,7 +454,7 @@ function normalizeProjectGroup(space, index = 0) {
 }
 
 function makeProjectGroup(name = "新项目组合", type = "space") {
-  return normalizeProjectGroup({ id: makeId("project-group"), name, type, workType: "labor", sortOrder: currentQuote()?.spaces?.length || 0 });
+  return normalizeProjectGroup({ id: makeId("group"), name, type, workType: "labor", sortOrder: currentQuote()?.spaces?.length || 0 });
 }
 
 function validProjectGroupIconKey(iconKey) {
@@ -679,7 +694,7 @@ function processNoteForQuoteItem(line, versionId = currentQuote()?.priceVersionI
 function makeQuoteItem(itemName = "", area = "", quantity = 0, spaceId = "") {
   const item = findLaborItem(itemName);
   return normalizeQuoteItem({
-    id: makeId("line"),
+    id: makeId("item"),
     priceItemName: itemName,
     sourceType: item?.usesMaterial || defaultMaterialIdForItem(item) ? "material" : "labor",
     area,
@@ -700,7 +715,7 @@ function normalizeQuoteItem(line, versionId = currentVersion()?.id) {
   const rawEngineeringName = line.engineeringName || line.itemName || "";
   const fallbackEngineeringName = rawEngineeringName || (priceItemName ? displayEngineeringName(priceItemName) : "");
   return {
-    id: line.id || makeId("line"),
+    id: line.id || makeId("item"),
     engineeringName: priceItemName && rawEngineeringName === displayEngineeringName(priceItemName)
       ? priceItemName
       : fallbackEngineeringName,
@@ -723,7 +738,9 @@ function isMaterialQuoteItem(line) {
   return line?.sourceType === "material" || Boolean(line?.materialId);
 }
 
+// 总渲染入口：页面切换、管理列表、编辑区、各类库和预览都在这里刷新。
 function renderAll() {
+  if (state.loadBlocked) return;
   switchPage(state.activePage);
   renderManager();
   renderSettings();
@@ -734,6 +751,7 @@ function renderAll() {
   renderTotalsAndPreview();
 }
 
+// 案例报价管理页：客户与案例报价目前是一体管理，删除报价需要名称核对。
 function renderManager() {
   const activeCustomer = currentCustomer();
   if (els.customerName) els.customerName.value = activeCustomer.name;
@@ -790,6 +808,7 @@ function renderManager() {
   });
 }
 
+// 左侧基础信息表单，包括工程名称、客户信息、费率和显示金额开关。
 function renderSettings() {
   const quote = currentQuote();
   if (!quote) return;
@@ -814,6 +833,7 @@ function renderSettings() {
   els.libraryPriceVersion.value = state.activeVersionId;
 }
 
+// 报价编辑主界面：项目组合、组合内条目、插入槽和返回高亮都在这里生成。
 function renderLines() {
   const quote = currentQuote();
   if (!quote) return;
@@ -1340,6 +1360,7 @@ function sortQuoteItemsInProjectGroupByLibraryOrder(spaceId) {
   quote.lines = scored.map((entry) => entry.keep ? entry.line : sortedSpaceLines[cursor++]);
 }
 
+// 工费条目输入的相似匹配：优先选择已有库条目，只有无前缀匹配时才允许新增。
 function renderSuggestions(container, line, query) {
   const cleaned = normalizeName(query);
   const exactItem = cleaned ? findLaborItem(cleaned) : null;
@@ -1573,6 +1594,7 @@ function scoreMaterial(material, query) {
   return score;
 }
 
+// 从报价编辑跳转到工费库/主材库时记录返回位置，收起编辑区后可回到原条目。
 function openLaborItemEditor(itemName, versionId, returnContext = null) {
   const version = state.versions.find((item) => item.id === versionId) || currentVersion();
   if (!version) return;
@@ -1709,7 +1731,7 @@ function createLaborItemFromQuoteItem(line, rawName) {
   if (!confirm(`要把“${itemName}”新增到当前工费库吗？\n\n相似条目：${similarText}`)) return;
 
   const newItem = {
-    id: makeId("price"),
+    id: makeId("labor"),
     name: itemName,
     sortOrder: nextItemSortOrder(template?.categoryId || ""),
     unit: itemUnit,
@@ -1738,6 +1760,7 @@ function createLaborItemFromQuoteItem(line, rawName) {
   renderAll();
 }
 
+// 工费库页面：维护清工辅料的分类、辅料、单价、成本和推荐工程量公式。
 function renderLaborLibrary() {
   renderCategoryLibrary();
   const keyword = els.priceSearch.value.trim().toLowerCase();
@@ -1917,6 +1940,7 @@ function uniqueMaterialName(baseName) {
   return `${baseName}${index}`;
 }
 
+// 主材库页面：主材价格独立维护，报价编辑里的主材条目只引用这里的名称和单价。
 function renderMaterials() {
   if (!els.materialList) return;
   const keyword = (els.materialSearch?.value || "").trim().toLowerCase();
@@ -2176,6 +2200,7 @@ function templateLaborOptions(selectedName = "") {
   ))).join("");
 }
 
+// 模板项排序与报价编辑保持一致：清工辅料按分类/工费库顺序，装修主材按主材类目/主材库顺序。
 function sortedTemplateItems(template) {
   const categoryIndex = new Map(currentCategories().map((category, index) => [category.id, index]));
   const laborIndex = new Map(currentLaborItems().map((item, index) => [item.name, index]));
@@ -2208,6 +2233,7 @@ function sortedTemplateItems(template) {
   });
 }
 
+// 模板库页面：模板本身可拖动排序，模板内条目的展示顺序由 sortedTemplateItems 决定。
 function renderTemplates() {
   if (!els.templateList) return;
   const templates = (state.templates || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
@@ -2543,7 +2569,7 @@ function createLaborItemFromTemplate(templateItem, rawName) {
   const similarText = comparable.length ? comparable.map((item) => item.name).join("、") : "暂无相似条目";
   if (!confirm(`要把“${itemName}”新增到当前工费库吗？\n\n相似条目：${similarText}`)) return;
   const newItem = normalizeLaborItem({
-    id: makeId("price"),
+    id: makeId("labor"),
     name: itemName,
     sortOrder: nextItemSortOrder(source?.categoryId || ""),
     unit,
@@ -2798,7 +2824,7 @@ function addLaborItem() {
   if (!version) return;
   const name = createUniqueLaborItemName();
   const newItem = {
-    id: makeId("price"),
+    id: makeId("labor"),
     name,
     sortOrder: nextItemSortOrder(""),
     unit: parsePriceNameUnit(name)?.unit || "项",
@@ -2955,6 +2981,7 @@ function moveLaborItemBefore(draggedItemName, targetItemName, categoryId, visibl
   renderLaborLibrary();
 }
 
+// 预览和打印共用的报价单渲染。showAmountColumns 为 false 时隐藏辅料/单价/金额列。
 function renderTotalsAndPreview() {
   const quote = currentQuote();
   if (!quote) return;
@@ -3028,6 +3055,7 @@ function renderTotalsAndPreview() {
   }).join("");
 }
 
+// 根据“显示金额”开关重建表头，同时切换表格列宽样式。
 function renderPreviewTableHead(showAmountColumns = true) {
   if (!els.previewTableHead) return;
   els.previewTableHead.closest("table")?.classList.toggle("amount-hidden", !showAmountColumns);
@@ -3046,6 +3074,7 @@ function renderPreviewTableHead(showAmountColumns = true) {
   `;
 }
 
+// 计算总价：明细金额始终参与合计，即使报价单隐藏金额列也不影响小计和总价。
 function calculateTotals(quote = currentQuote()) {
   const spacesById = new Map((quote?.spaces || []).map((space) => [space.id, space]));
   const subtotals = (quote?.lines || []).reduce((sum, line) => {
@@ -3238,6 +3267,7 @@ function chooseTemplateForSpace(workType) {
   return options.find((template) => normalizeName(template.name) === normalizeName(cleaned)) || null;
 }
 
+// 项目组合新增时可套用模板；后续同步模板只增量导入缺少的条目。
 function applyTemplateToSpace(template, space) {
   const quote = currentQuote();
   if (!quote || !template || !space) return 0;
@@ -3251,6 +3281,7 @@ function applyTemplateToSpace(template, space) {
   return newLines.length;
 }
 
+// 同步模板不删除、不覆盖已有条目，避免改动用户已填写的部位和工程量。
 function syncTemplateToProjectGroup(template, space) {
   const quote = currentQuote();
   if (!quote || !template || !space) return { added: 0, skipped: 0 };
@@ -3736,6 +3767,7 @@ function updateActiveCustomerFromForm() {
   renderManager();
 }
 
+// 工费版本管理：版本只是工费库的版本，报价案例会记录当前引用的版本 id。
 function cloneVersion() {
   const base = currentVersion();
   const name = prompt("新工费版本名称", `${base.name} - 调整版`);
@@ -3775,6 +3807,7 @@ async function backupDatabase() {
   }
 }
 
+// 导出/导入使用同一份便携数据结构，字段名保持前端兼容，不等同于 SQLite 表名。
 function getPortableState() {
   return {
     app: "quote-tool",
@@ -3917,6 +3950,7 @@ function unlinkLaborItemFromQuotes(itemName, versionId) {
   });
 }
 
+// 库条目改名或改价后，同步所有引用该工费/主材的报价条目，保持显示和计算一致。
 function syncQuoteItemLaborParts(item) {
   state.quotes.forEach((quote) => {
     quote.lines.forEach((line) => {
@@ -3962,7 +3996,12 @@ function syncQuoteItemMaterialName(materialId, newName) {
   });
 }
 
+// 保存保护：如果 SQLite 未成功载入，阻止保存，避免旧缓存覆盖数据库。
 function saveState(message = "已保存") {
+  if (state.loadBlocked) {
+    if (els.saveStatus) els.saveStatus.textContent = "数据未载入，已阻止保存，避免覆盖 SQLite。";
+    return;
+  }
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   saveStateToServer();
   if (els.saveStatus) {
@@ -3970,6 +4009,7 @@ function saveState(message = "已保存") {
   }
 }
 
+// Node 服务是正式数据源；读取失败时 HTTP 模式直接报错，避免旧缓存覆盖数据库。
 async function loadStateFromServer() {
   try {
     const response = await fetch("/api/data", { cache: "no-store" });
@@ -4000,12 +4040,6 @@ async function saveStateToServer() {
     console.warn("Server save failed", error);
     if (els.saveStatus) els.saveStatus.textContent = "保存到本地文件失败，请确认 Node 服务正在运行";
   }
-}
-
-async function loadInitialPrices() {
-  const response = await fetch("/data/initial-prices.json", { cache: "no-store" });
-  if (!response.ok) throw new Error("无法读取初始工费库");
-  return response.json();
 }
 
 async function loadStateFromTauri() {
@@ -4039,6 +4073,7 @@ function getTauriInvoke() {
   return window.__TAURI__?.core?.invoke || window.__TAURI__?.tauri?.invoke || null;
 }
 
+// 使用浏览器打印能力生成 PDF，文件名由工程名、客户名和时间组成。
 function printQuotePdf() {
   const previousTitle = document.title;
   document.title = buildPdfFileName();
@@ -4051,6 +4086,7 @@ function printQuotePdf() {
   setTimeout(restoreTitle, 1200);
 }
 
+// 通用工具函数区域：只放无业务副作用的小工具。
 function buildPdfFileName() {
   const quote = currentQuote();
   const projectName = quote?.projectName || quote?.name || "工程";
@@ -4080,7 +4116,23 @@ function sanitizeFileName(value) {
 }
 
 function makeId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${uuidV7()}`;
+}
+
+function uuidV7() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const timestamp = BigInt(Date.now());
+  bytes[0] = Number((timestamp >> 40n) & 0xffn);
+  bytes[1] = Number((timestamp >> 32n) & 0xffn);
+  bytes[2] = Number((timestamp >> 24n) & 0xffn);
+  bytes[3] = Number((timestamp >> 16n) & 0xffn);
+  bytes[4] = Number((timestamp >> 8n) & 0xffn);
+  bytes[5] = Number(timestamp & 0xffn);
+  bytes[6] = (bytes[6] & 0x0f) | 0x70;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function normalizeName(value) {
