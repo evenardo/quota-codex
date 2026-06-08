@@ -26,13 +26,21 @@ data/backups/quote-data-manual-年月日时分秒毫秒.sqlite
 data/backups/quote-data-auto-年月日时分秒毫秒.sqlite
 ```
 
-自动备份默认每 30 分钟执行一次，默认保留最近 80 个自动备份。手动备份不会被自动清理。
+自动备份默认每 10 分钟执行一次。手动备份不会被自动清理。
+
+自动备份按时间分层清理：
+
+- 1 小时内：保留全部，约 6 份
+- 1 到 12 小时：每小时保留 2 份
+- 12 到 24 小时：每小时保留 1 份
+- 1 到 7 天：每天保留 1 份
+- 7 天到 1 个月：每周保留 1 份
+- 1 个月以上：每个月保留 1 份
 
 可以用环境变量调整：
 
 ```powershell
-$env:BACKUP_INTERVAL_MINUTES="30"
-$env:BACKUP_KEEP="80"
+$env:BACKUP_INTERVAL_MINUTES="10"
 pnpm dev
 ```
 

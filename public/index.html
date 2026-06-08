@@ -16,6 +16,7 @@
       <button class="tab active" type="button" data-page="manager">案例报价</button>
       <button class="tab" type="button" data-page="editor">报价编辑</button>
       <button class="tab" type="button" data-page="templates">模板库</button>
+      <button class="tab" type="button" data-page="packages">套餐库</button>
       <button class="tab" type="button" data-page="prices">工费库</button>
       <button class="tab" type="button" data-page="materials">主材库</button>
     </nav>
@@ -50,7 +51,7 @@
         <section class="panel settings">
           <div class="field">
             <label for="projectName">工程名称</label>
-            <input id="projectName" type="text" value="马市角办公楼三层改造">
+            <input id="projectName" type="text" value="">
           </div>
           <div class="field">
             <label for="clientName">客户名称</label>
@@ -62,7 +63,7 @@
           </div>
           <div class="field">
             <label for="clientAddress">客户地址</label>
-            <textarea id="clientAddress" placeholder="客户地址或项目地址"></textarea>
+            <textarea id="clientAddress" placeholder="客户地址或项目地点"></textarea>
           </div>
           <div class="field">
             <label for="quoteDate">报价日期</label>
@@ -86,7 +87,7 @@
           </div>
           <div class="totals">
             <div><span>清工辅料小计</span><strong id="laborSubtotalText">¥0.00</strong></div>
-            <div><span>主材小计</span><strong id="materialSubtotalText">¥0.00</strong></div>
+            <div><span>装修主材小计</span><strong id="materialSubtotalText">¥0.00</strong></div>
             <div><span>管理费</span><strong id="managementText">¥0.00</strong></div>
             <div><span>设计费</span><strong id="designText">¥0.00</strong></div>
             <div><span>税金</span><strong id="taxText">¥0.00</strong></div>
@@ -124,13 +125,13 @@
                   <th>辅料</th>
                   <th>单价</th>
                   <th>金额</th>
-              </tr>
-            </thead>
+                </tr>
+              </thead>
               <tbody id="previewRows"></tbody>
             </table>
             <div class="preview-summary">
               <div><span>清工辅料小计</span><strong id="previewLaborSubtotal">¥0.00</strong></div>
-              <div><span>主材小计</span><strong id="previewMaterialSubtotal">¥0.00</strong></div>
+              <div><span>装修主材小计</span><strong id="previewMaterialSubtotal">¥0.00</strong></div>
               <div><span>项目管理费</span><strong id="previewManagement">¥0.00</strong></div>
               <div><span>设计费</span><strong id="previewDesign">¥0.00</strong></div>
               <div><span>税金</span><strong id="previewTax">¥0.00</strong></div>
@@ -154,6 +155,27 @@
           <span id="templateCount">0 个模板</span>
         </div>
         <div class="template-list" id="templateList"></div>
+      </section>
+    </section>
+
+    <section class="page" id="packagesPage">
+      <section class="panel package-page price-page-panel">
+        <div class="section-title">
+          <div>
+            <h2>清工辅料套餐库</h2>
+            <p class="muted">维护套餐说明和内部成本测算；报价时套餐作为一行报价，说明单独展示。</p>
+          </div>
+          <button id="addPackageBtn" type="button">添加套餐</button>
+        </div>
+        <div class="package-layout">
+          <aside class="package-sidebar">
+            <div class="price-tools compact-tools">
+              <span id="packageCount">0 个套餐</span>
+            </div>
+            <div class="package-list" id="packageList"></div>
+          </aside>
+          <section class="package-detail" id="packageDetail"></section>
+        </div>
       </section>
     </section>
 
@@ -202,7 +224,7 @@
         <div class="section-title">
           <div>
             <h2>主材库</h2>
-            <p class="muted">这里单独维护主材信息，报价编辑的主材项目组合会调用这里。</p>
+            <p class="muted">这里单独维护主材信息，报价编辑的主材项目会调用这里。</p>
           </div>
           <button id="addMaterialBtn" type="button">添加主材</button>
         </div>

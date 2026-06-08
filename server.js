@@ -12,8 +12,7 @@ const dataDir = path.join(__dirname, "data");
 const sqliteFile = path.join(dataDir, "quote-data.sqlite");
 const backupDir = path.join(dataDir, "backups");
 const port = Number(process.env.PORT || 5177);
-const backupIntervalMinutes = Number(process.env.BACKUP_INTERVAL_MINUTES || 60);
-const automaticBackupKeep = Number(process.env.BACKUP_KEEP || 48);
+const backupIntervalMinutes = Number(process.env.BACKUP_INTERVAL_MINUTES || 10);
 const DEFAULT_QUANTITY_FORMULA = "q=s+c*(h-0.25)";
 
 const mimeTypes = {
@@ -148,6 +147,80 @@ function initializeDatabase() {
       FOREIGN KEY (template_id) REFERENCES project_group_templates(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_template_items_template ON project_group_template_items(template_id, sort_order);
+    CREATE TABLE IF NOT EXISTS packages (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      unit TEXT,
+      quote_unit_price REAL DEFAULT 0,
+      cost_target_rate REAL DEFAULT 0,
+      quantity_formula TEXT,
+      description TEXT,
+      exclusion_note TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      collapsed INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS package_sections (
+      id TEXT PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS package_section_items (
+      id TEXT PRIMARY KEY,
+      section_id TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      name TEXT,
+      unit TEXT,
+      provider TEXT,
+      description TEXT,
+      FOREIGN KEY (section_id) REFERENCES package_sections(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS package_estimates (
+      id TEXT PRIMARY KEY,
+      package_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      building_area REAL DEFAULT 0,
+      area REAL DEFAULT 0,
+      perimeter REAL DEFAULT 0,
+      height REAL DEFAULT 0,
+      quote_unit_price REAL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active INTEGER DEFAULT 0,
+      FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS package_estimate_groups (
+      id TEXT PRIMARY KEY,
+      estimate_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      icon_key TEXT,
+      area REAL DEFAULT 0,
+      perimeter REAL DEFAULT 0,
+      height REAL DEFAULT 0,
+      collapsed INTEGER DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (estimate_id) REFERENCES package_estimates(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS package_estimate_items (
+      id TEXT PRIMARY KEY,
+      estimate_id TEXT NOT NULL,
+      group_id TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      item_type TEXT DEFAULT 'labor',
+      labor_item_name TEXT,
+      material_id TEXT,
+      material_category TEXT,
+      area TEXT,
+      quantity REAL DEFAULT 0,
+      included_type TEXT DEFAULT 'included',
+      FOREIGN KEY (estimate_id) REFERENCES package_estimates(id) ON DELETE CASCADE,
+      FOREIGN KEY (group_id) REFERENCES package_estimate_groups(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_package_sections_package ON package_sections(package_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_package_section_items_section ON package_section_items(section_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_package_estimates_package ON package_estimates(package_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_package_estimate_groups_estimate ON package_estimate_groups(estimate_id, sort_order);
+    CREATE INDEX IF NOT EXISTS idx_package_estimate_items_estimate ON package_estimate_items(estimate_id, sort_order);
     CREATE TABLE IF NOT EXISTS customers (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -227,6 +300,10 @@ function initializeDatabase() {
   ensureColumn("quote_project_groups", "building_area", "REAL DEFAULT 0");
   ensureColumn("quote_project_groups", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("project_group_templates", "collapsed", "INTEGER DEFAULT 0");
+  ensureColumn("packages", "quantity_formula", "TEXT");
+  ensureColumn("packages", "collapsed", "INTEGER DEFAULT 0");
+  ensureColumn("packages", "exclusion_note", "TEXT");
+  ensureColumn("package_estimates", "active", "INTEGER DEFAULT 0");
   ensureColumn("labor_items", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("labor_items", "category_id", "TEXT");
   ensureColumn("labor_items", "quantity_formula", "TEXT");
@@ -357,6 +434,19 @@ function migrateIdsToUuidV7() {
     updateForeignKeys("quote_project_groups", "template_id", templateMap);
 
     migrateTextPrimaryKey("project_group_template_items", "template-item");
+
+    const packageMap = migrateTextPrimaryKey("packages", "package");
+    updateForeignKeys("package_sections", "package_id", packageMap);
+    updateForeignKeys("package_estimates", "package_id", packageMap);
+    const packageSectionMap = migrateTextPrimaryKey("package_sections", "package-section");
+    updateForeignKeys("package_section_items", "section_id", packageSectionMap);
+    migrateTextPrimaryKey("package_section_items", "package-section-item");
+    const packageEstimateMap = migrateTextPrimaryKey("package_estimates", "package-estimate");
+    updateForeignKeys("package_estimate_groups", "estimate_id", packageEstimateMap);
+    updateForeignKeys("package_estimate_items", "estimate_id", packageEstimateMap);
+    const packageEstimateGroupMap = migrateTextPrimaryKey("package_estimate_groups", "package-group");
+    updateForeignKeys("package_estimate_items", "group_id", packageEstimateGroupMap);
+    migrateTextPrimaryKey("package_estimate_items", "package-item");
 
     const customerMap = migrateTextPrimaryKey("customers", "customer");
     updateForeignKeys("quotes", "customer_id", customerMap);
@@ -509,8 +599,60 @@ function databaseHasWorkingData() {
 async function handlePostData(req, res) {
   const body = await readBody(req);
   const parsed = JSON.parse(body);
+  if (hasQuestionMarkEncodingDamage(parsed?.data || parsed)) {
+    sendJson(res, 400, {
+      error: "检测到大量中文字段疑似被编码转换成问号，已阻止写入数据库。请检查导入/保存来源的 UTF-8 编码。"
+    });
+    return;
+  }
   savePortableState(parsed);
   sendJson(res, 200, { ok: true, path: sqliteFile });
+}
+
+function hasQuestionMarkEncodingDamage(data) {
+  const fields = [];
+  const pushText = (value) => {
+    if (typeof value === "string" && value.trim()) fields.push(value.trim());
+  };
+
+  (data?.versions || []).forEach((version) => {
+    pushText(version.name);
+    (version.items || []).forEach((item) => {
+      pushText(item.name);
+      pushText(item.unit);
+      pushText(item.category);
+      pushText(item.description);
+    });
+  });
+  (data?.categories || []).forEach((category) => {
+    pushText(category.name);
+    pushText(category.description);
+  });
+  (data?.materials || []).forEach((material) => {
+    pushText(material.name);
+    pushText(material.unit);
+    pushText(material.primaryCategory || material.category);
+    pushText(material.note);
+  });
+  (data?.templates || []).forEach((template) => {
+    pushText(template.name);
+    (template.items || []).forEach((item) => pushText(item.itemName));
+  });
+  (data?.quotes || []).forEach((quote) => {
+    pushText(quote.name);
+    pushText(quote.projectName);
+    pushText(quote.clientName);
+    (quote.spaces || []).forEach((space) => pushText(space.name));
+    (quote.lines || []).forEach((line) => {
+      pushText(line.engineeringName);
+      pushText(line.priceItemName);
+      pushText(line.area);
+    });
+  });
+
+  if (fields.length < 20) return false;
+  const damaged = fields.filter((value) => /\?{2,}/.test(value));
+  return damaged.length >= 20 && damaged.length / fields.length > 0.2;
 }
 
 async function handleBackupDatabase(res) {
@@ -545,14 +687,119 @@ async function createSqliteBackup(kind) {
 }
 
 async function cleanupAutomaticBackups() {
-  if (!Number.isFinite(automaticBackupKeep) || automaticBackupKeep <= 0) return;
   const files = await readdir(backupDir);
   const automaticBackups = files
-    .filter((file) => /^quote-data-auto-\d{17}\.sqlite$/i.test(file))
-    .sort()
-    .reverse();
-  const expiredBackups = automaticBackups.slice(automaticBackupKeep);
-  await Promise.all(expiredBackups.map((file) => unlink(path.join(backupDir, file))));
+    .map((file) => ({ file, createdAt: parseAutomaticBackupTimestamp(file) }))
+    .filter((entry) => entry.createdAt)
+    .sort((a, b) => b.createdAt - a.createdAt);
+  const keep = selectAutomaticBackupsToKeep(automaticBackups, new Date());
+  const expiredBackups = automaticBackups.filter((entry) => !keep.has(entry.file));
+  await Promise.all(expiredBackups.map((entry) => unlink(path.join(backupDir, entry.file))));
+}
+
+function selectAutomaticBackupsToKeep(backups, now = new Date()) {
+  const keep = new Set();
+  const hourlyTwo = new Map();
+  const hourlyOne = new Set();
+  const daily = new Set();
+  const weekly = new Set();
+  const monthly = new Set();
+  const nowTime = now.getTime();
+
+  backups.forEach((entry) => {
+    const ageHours = (nowTime - entry.createdAt.getTime()) / (60 * 60 * 1000);
+    if (ageHours <= 1) {
+      keep.add(entry.file);
+      return;
+    }
+
+    if (ageHours <= 12) {
+      const key = hourBucket(entry.createdAt);
+      const count = hourlyTwo.get(key) || 0;
+      if (count < 2) {
+        keep.add(entry.file);
+        hourlyTwo.set(key, count + 1);
+      }
+      return;
+    }
+
+    if (ageHours <= 24) {
+      const key = hourBucket(entry.createdAt);
+      if (!hourlyOne.has(key)) {
+        keep.add(entry.file);
+        hourlyOne.add(key);
+      }
+      return;
+    }
+
+    const ageDays = ageHours / 24;
+    if (ageDays <= 7) {
+      const key = dayBucket(entry.createdAt);
+      if (!daily.has(key)) {
+        keep.add(entry.file);
+        daily.add(key);
+      }
+      return;
+    }
+
+    if (ageDays <= 30) {
+      const key = weekBucket(entry.createdAt);
+      if (!weekly.has(key)) {
+        keep.add(entry.file);
+        weekly.add(key);
+      }
+      return;
+    }
+
+    const key = monthBucket(entry.createdAt);
+    if (!monthly.has(key)) {
+      keep.add(entry.file);
+      monthly.add(key);
+    }
+  });
+
+  return keep;
+}
+
+function parseAutomaticBackupTimestamp(file) {
+  const match = /^quote-data-auto-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})\.sqlite$/i.exec(file);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, millisecond] = match;
+  const date = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    Number(millisecond)
+  );
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function hourBucket(date) {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}-${date.getHours()}`;
+}
+
+function dayBucket(date) {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function weekBucket(date) {
+  const weekStart = startOfLocalWeek(date);
+  return dayBucket(weekStart);
+}
+
+function monthBucket(date) {
+  return `${date.getFullYear()}-${date.getMonth()}`;
+}
+
+function startOfLocalWeek(date) {
+  const result = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = result.getDay() || 7;
+  result.setDate(result.getDate() - day + 1);
+  result.setHours(0, 0, 0, 0);
+  return result;
 }
 
 function quoteSqliteString(value) {
@@ -579,13 +826,17 @@ function loadPortableState() {
     categories: loadPriceCategories(),
     materials: loadMaterials(),
     templates: loadTemplates(),
+    packages: loadPackages(),
     activeVersionId: getAppState("activeVersionId") || "",
     activePage: getAppState("activePage") || "manager",
     categoryLibraryCollapsed: getAppState("categoryLibraryCollapsed") !== "false",
     customers: db.prepare("SELECT id, name, contact, phone, address FROM customers ORDER BY rowid").all(),
     quotes: loadQuotes(),
     activeCustomerId: getAppState("activeCustomerId") || "",
-    activeQuoteId: getAppState("activeQuoteId") || ""
+    activeQuoteId: getAppState("activeQuoteId") || "",
+    activePackageId: getAppState("activePackageId") || "",
+    activePackageEstimateId: getAppState("activePackageEstimateId") || "",
+    activePackageTab: getAppState("activePackageTab") || "description"
   };
 
   return {
@@ -661,6 +912,68 @@ function loadTemplates() {
   return templates.map((template) => ({ ...template, items: items.all(template.id) }));
 }
 
+function loadPackages() {
+  const packages = db.prepare(`
+    SELECT
+      id, name, unit,
+      quote_unit_price AS quoteUnitPrice,
+      cost_target_rate AS costTargetRate,
+      quantity_formula AS quantityFormula,
+      description, exclusion_note AS exclusionNote,
+      sort_order AS sortOrder, collapsed
+    FROM packages
+    ORDER BY sort_order, rowid
+  `).all();
+  const sections = db.prepare(`
+    SELECT id, name, sort_order AS sortOrder
+    FROM package_sections
+    WHERE package_id = ?
+    ORDER BY sort_order, rowid
+  `);
+  const sectionItems = db.prepare(`
+    SELECT id, name, unit, provider, description, sort_order AS sortOrder
+    FROM package_section_items
+    WHERE section_id = ?
+    ORDER BY sort_order, rowid
+  `);
+  const estimates = db.prepare(`
+    SELECT
+      id, name, building_area AS buildingArea, area, perimeter, height,
+      quote_unit_price AS quoteUnitPrice, sort_order AS sortOrder, active
+    FROM package_estimates
+    WHERE package_id = ?
+    ORDER BY sort_order, rowid
+  `);
+  const groups = db.prepare(`
+    SELECT id, name, icon_key AS iconKey, area, perimeter, height, collapsed, sort_order AS sortOrder
+    FROM package_estimate_groups
+    WHERE estimate_id = ?
+    ORDER BY sort_order, rowid
+  `);
+  const estimateItems = db.prepare(`
+    SELECT
+      id, group_id AS groupId, sort_order AS sortOrder, item_type AS sourceType,
+      labor_item_name AS itemName, material_id AS materialId, material_category AS materialCategory,
+      area, quantity, included_type AS includedType
+    FROM package_estimate_items
+    WHERE estimate_id = ?
+    ORDER BY sort_order, rowid
+  `);
+
+  return packages.map((entry) => {
+    const packageSections = sections.all(entry.id).map((section) => ({
+      ...section,
+      items: sectionItems.all(section.id)
+    }));
+    const packageEstimates = estimates.all(entry.id).map((estimate) => ({
+      ...estimate,
+      groups: groups.all(estimate.id),
+      items: estimateItems.all(estimate.id)
+    }));
+    return { ...entry, sections: packageSections, estimates: packageEstimates };
+  });
+}
+
 function loadQuotes() {
   const quotes = db.prepare(`
     SELECT
@@ -710,6 +1023,12 @@ function savePortableState(portable) {
       DELETE FROM customers;
       DELETE FROM project_group_template_items;
       DELETE FROM project_group_templates;
+      DELETE FROM package_estimate_items;
+      DELETE FROM package_estimate_groups;
+      DELETE FROM package_estimates;
+      DELETE FROM package_section_items;
+      DELETE FROM package_sections;
+      DELETE FROM packages;
       DELETE FROM materials;
       DELETE FROM labor_items;
       DELETE FROM labor_categories;
@@ -721,10 +1040,14 @@ function savePortableState(portable) {
     setAppState("categoryLibraryCollapsed", data.categoryLibraryCollapsed ?? true);
     setAppState("activeCustomerId", data.activeCustomerId || "");
     setAppState("activeQuoteId", data.activeQuoteId || "");
+    setAppState("activePackageId", data.activePackageId || "");
+    setAppState("activePackageEstimateId", data.activePackageEstimateId || "");
+    setAppState("activePackageTab", data.activePackageTab === "estimate" ? "estimate" : "description");
     insertPriceCategories(categories);
     insertPriceVersions(data.versions, categories);
     insertMaterials(data.materials || []);
     insertTemplates(data.templates || []);
+    insertPackages(data.packages || []);
     insertCustomers(data.customers);
     insertQuotes(data.quotes);
     db.exec("COMMIT");
@@ -735,10 +1058,12 @@ function savePortableState(portable) {
 }
 
 function insertPriceCategories(categories) {
-  const insertCategory = db.prepare("INSERT INTO labor_categories (id, name, description, sort_order) VALUES (?, ?, ?, ?)");
+  const insertCategory = db.prepare("INSERT OR IGNORE INTO labor_categories (id, name, description, sort_order) VALUES (?, ?, ?, ?)");
+  const seen = new Set();
   categories.forEach((category, index) => {
     const name = String(category?.name || "").trim();
-    if (!name) return;
+    if (!name || seen.has(name)) return;
+    seen.add(name);
     insertCategory.run(
       category.id || makeId("category"),
       name,
@@ -757,13 +1082,24 @@ function insertPriceVersions(versions, categories) {
       uses_material, material_category, material_subcategory, default_material_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const categoryById = new Map((categories || []).map((category) => [category.id, category.name]));
-  const categoryByName = new Map((categories || []).map((category) => [String(category.name || "").trim(), category.id]));
+  const uniqueCategories = [];
+  const seenCategoryNames = new Set();
+  (categories || []).forEach((category) => {
+    const name = String(category?.name || "").trim();
+    if (!name || seenCategoryNames.has(name)) return;
+    seenCategoryNames.add(name);
+    uniqueCategories.push(category);
+  });
+  const categoryById = new Map(uniqueCategories.map((category) => [category.id, category.name]));
+  const categoryByName = new Map(uniqueCategories.map((category) => [String(category.name || "").trim(), category.id]));
+  const validCategoryIds = new Set(uniqueCategories.map((category) => category.id));
   versions.forEach((version) => {
     insertVersion.run(version.id, version.name || "未命名价格版本", version.createdAt || "");
     (version.items || []).forEach((item, index) => {
       const categoryName = String(item.category || "").trim();
-      const categoryId = item.categoryId || (categoryName ? categoryByName.get(categoryName) : "") || null;
+      const categoryId = validCategoryIds.has(item.categoryId)
+        ? item.categoryId
+        : (categoryName ? categoryByName.get(categoryName) : "") || null;
       insertItem.run(
         item.id || makeId("labor"),
         version.id,
@@ -862,6 +1198,127 @@ function insertTemplates(templates) {
         String(item?.area || "").trim(),
         toNumber(item?.quantity)
       );
+    });
+  });
+}
+
+function insertPackages(packages) {
+  const insertPackage = db.prepare(`
+    INSERT INTO packages (
+      id, name, unit, quote_unit_price, cost_target_rate, quantity_formula,
+      description, exclusion_note, sort_order, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertSection = db.prepare(`
+    INSERT INTO package_sections (id, package_id, name, sort_order)
+    VALUES (?, ?, ?, ?)
+  `);
+  const insertSectionItem = db.prepare(`
+    INSERT INTO package_section_items (id, section_id, sort_order, name, unit, provider, description)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertEstimate = db.prepare(`
+    INSERT INTO package_estimates (
+      id, package_id, name, building_area, area, perimeter, height, quote_unit_price, sort_order, active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertGroup = db.prepare(`
+    INSERT INTO package_estimate_groups (
+      id, estimate_id, name, icon_key, area, perimeter, height, collapsed, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertEstimateItem = db.prepare(`
+    INSERT INTO package_estimate_items (
+      id, estimate_id, group_id, sort_order, item_type, labor_item_name, material_id,
+      material_category, area, quantity, included_type
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  (packages || []).forEach((entry, index) => {
+    const name = String(entry?.name || "").trim();
+    if (!name) return;
+    const packageId = entry.id || makeId("package");
+    insertPackage.run(
+      packageId,
+      name,
+      String(entry?.unit || "平米").trim(),
+      toNumber(entry?.quoteUnitPrice),
+      toNumber(entry?.costTargetRate),
+      String(entry?.quantityFormula || "q=buildingArea").trim(),
+      String(entry?.description || "").trim(),
+      String(entry?.exclusionNote || "").trim(),
+      Number.isFinite(Number(entry?.sortOrder)) ? Number(entry.sortOrder) : index,
+      entry?.collapsed ? 1 : 0
+    );
+
+    (entry.sections || []).forEach((section, sectionIndex) => {
+      const sectionName = String(section?.name || "").trim();
+      if (!sectionName) return;
+      const sectionId = section.id || makeId("package-section");
+      insertSection.run(
+        sectionId,
+        packageId,
+        sectionName,
+        Number.isFinite(Number(section?.sortOrder)) ? Number(section.sortOrder) : sectionIndex
+      );
+      (section.items || []).forEach((item, itemIndex) => {
+        insertSectionItem.run(
+          item?.id || makeId("package-section-item"),
+          sectionId,
+          Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : itemIndex,
+          String(item?.name || "").trim(),
+          String(item?.unit || "").trim(),
+          String(item?.provider || "").trim(),
+          String(item?.description || "").trim()
+        );
+      });
+    });
+
+    (entry.estimates || []).forEach((estimate, estimateIndex) => {
+      const estimateName = String(estimate?.name || "").trim();
+      if (!estimateName) return;
+      const estimateId = estimate.id || makeId("package-estimate");
+      insertEstimate.run(
+        estimateId,
+        packageId,
+        estimateName,
+        toNumber(estimate?.buildingArea),
+        toNumber(estimate?.area),
+        toNumber(estimate?.perimeter),
+        toNumber(estimate?.height),
+        toNumber(estimate?.quoteUnitPrice ?? entry?.quoteUnitPrice),
+        Number.isFinite(Number(estimate?.sortOrder)) ? Number(estimate.sortOrder) : estimateIndex,
+        estimate?.active ? 1 : 0
+      );
+      (estimate.groups || []).forEach((group, groupIndex) => {
+        insertGroup.run(
+          group?.id || makeId("package-group"),
+          estimateId,
+          String(group?.name || "测算组合").trim(),
+          String(group?.iconKey || "").trim(),
+          toNumber(group?.area),
+          toNumber(group?.perimeter),
+          toNumber(group?.height),
+          group?.collapsed ? 1 : 0,
+          Number.isFinite(Number(group?.sortOrder)) ? Number(group.sortOrder) : groupIndex
+        );
+      });
+      (estimate.items || []).forEach((item, itemIndex) => {
+        const sourceType = item?.sourceType === "material" || item?.itemType === "material" ? "material" : "labor";
+        insertEstimateItem.run(
+          item?.id || makeId("package-item"),
+          estimateId,
+          String(item?.groupId || "").trim() || null,
+          Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : itemIndex,
+          sourceType,
+          String(item?.itemName || "").trim(),
+          String(item?.materialId || "").trim(),
+          String(item?.materialCategory || "").trim(),
+          String(item?.area || "").trim(),
+          toNumber(item?.quantity),
+          String(item?.includedType || "included").trim()
+        );
+      });
     });
   });
 }

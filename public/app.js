@@ -24,6 +24,7 @@ const state = {
   categories: [],
   materials: [],
   templates: [],
+  packages: [],
   activeVersionId: "",
   activePage: "manager",
   categoryLibraryCollapsed: true,
@@ -31,6 +32,9 @@ const state = {
   quotes: [],
   activeCustomerId: "",
   activeQuoteId: "",
+  activePackageId: "",
+  activePackageEstimateId: "",
+  activePackageTab: "description",
   pendingLaborItemName: "",
   expandedLaborItemName: "",
   pendingMaterialId: "",
@@ -62,6 +66,7 @@ function bindElements() {
     "priceSearch", "priceCount", "priceList", "addPriceItemBtn", "previewTitle", "previewMeta", "previewTotal",
     "materialSearch", "materialCount", "materialList", "addMaterialBtn",
     "templateList", "templateCount", "addTemplateBtn",
+    "packageList", "packageCount", "packageDetail", "addPackageBtn",
     "categoryList", "addCategoryBtn", "toggleCategoryLibraryBtn", "categoryLibraryPanel",
     "previewTableHead", "previewRows", "previewLaborSubtotal", "previewMaterialSubtotal", "previewManagement", "previewDesign", "previewTax", "previewGrand"
   ].forEach((id) => {
@@ -150,6 +155,7 @@ function normalizeState() {
   state.categories = normalizeCategories([...(state.categories || []), ...deriveCategoriesFromVersions(state.versions)]);
   state.materials = (state.materials || []).map((material, index) => normalizeMaterial(material, index));
   state.templates = (state.templates || []).map((template, index) => normalizeTemplate(template, index));
+  state.packages = (state.packages || []).map((entry, index) => normalizePackage(entry, index));
   state.versions = state.versions.map((version) => normalizeVersion(version));
   state.activeVersionId = state.activeVersionId || state.versions[0]?.id || "";
   state.customers = (state.customers || []).map(normalizeCustomer);
@@ -164,6 +170,9 @@ function normalizeState() {
   }
   state.activeCustomerId = state.activeCustomerId || state.customers[0].id;
   state.activeQuoteId = state.activeQuoteId || state.quotes[0].id;
+  state.activePackageId = state.activePackageId || state.packages[0]?.id || "";
+  state.activePackageEstimateId = state.activePackageEstimateId || currentPackage()?.estimates?.[0]?.id || "";
+  state.activePackageTab = state.activePackageTab === "estimate" ? "estimate" : "description";
   state.activePage = state.activePage || "manager";
   state.categoryLibraryCollapsed = state.categoryLibraryCollapsed ?? true;
   state.returnToQuoteId = state.returnToQuoteId || "";
@@ -193,6 +202,94 @@ function normalizeTemplateItem(item, index = 0) {
     materialCategory: String(item?.materialCategory || "").trim(),
     area: String(item?.area || "").trim(),
     quantity: toNumber(item?.quantity),
+    sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index
+  };
+}
+
+function normalizePackage(entry, index = 0) {
+  const name = String(entry?.name || "").trim() || `清工辅料套餐 ${index + 1}`;
+  const estimates = (entry?.estimates || []).map((estimate, estimateIndex) => normalizePackageEstimate(estimate, estimateIndex));
+  if (!estimates.length) estimates.push(normalizePackageEstimate({ active: true }, 0));
+  if (!estimates.some((estimate) => estimate.active)) estimates[0].active = true;
+  return {
+    id: entry?.id || makeId("package"),
+    name,
+    unit: String(entry?.unit || "平米").trim(),
+    quoteUnitPrice: toNumber(entry?.quoteUnitPrice),
+    costTargetRate: toNumber(entry?.costTargetRate),
+    quantityFormula: String(entry?.quantityFormula || "q=buildingArea").trim(),
+    description: String(entry?.description || "").trim(),
+    exclusionNote: String(entry?.exclusionNote || "").trim(),
+    sortOrder: Number.isFinite(Number(entry?.sortOrder)) ? Number(entry.sortOrder) : index,
+    collapsed: Boolean(entry?.collapsed),
+    sections: (entry?.sections || []).map((section, sectionIndex) => normalizePackageSection(section, sectionIndex)),
+    estimates
+  };
+}
+
+function normalizePackageSection(section, index = 0) {
+  return {
+    id: section?.id || makeId("package-section"),
+    name: String(section?.name || "").trim() || `说明分类 ${index + 1}`,
+    sortOrder: Number.isFinite(Number(section?.sortOrder)) ? Number(section.sortOrder) : index,
+    items: (section?.items || []).map((item, itemIndex) => normalizePackageSectionItem(item, itemIndex))
+  };
+}
+
+function normalizePackageSectionItem(item, index = 0) {
+  return {
+    id: item?.id || makeId("package-section-item"),
+    name: String(item?.name || "").trim(),
+    unit: String(item?.unit || "").trim(),
+    provider: String(item?.provider || "").trim(),
+    description: String(item?.description || "").trim(),
+    sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index
+  };
+}
+
+function normalizePackageEstimate(estimate, index = 0) {
+  const groups = (estimate?.groups || []).map((group, groupIndex) => normalizePackageEstimateGroup(group, groupIndex));
+  if (!groups.length) groups.push(normalizePackageEstimateGroup({ name: "整体", iconKey: "home" }, 0));
+  return {
+    id: estimate?.id || makeId("package-estimate"),
+    name: String(estimate?.name || "").trim() || `143平米标准户型测算`,
+    buildingArea: toNumber(estimate?.buildingArea || 143),
+    area: toNumber(estimate?.area),
+    perimeter: toNumber(estimate?.perimeter),
+    height: toNumber(estimate?.height || 2.7),
+    quoteUnitPrice: toNumber(estimate?.quoteUnitPrice),
+    sortOrder: Number.isFinite(Number(estimate?.sortOrder)) ? Number(estimate.sortOrder) : index,
+    active: Boolean(estimate?.active),
+    groups,
+    items: (estimate?.items || []).map((item, itemIndex) => normalizePackageEstimateItem(item, itemIndex))
+  };
+}
+
+function normalizePackageEstimateGroup(group, index = 0) {
+  return {
+    id: group?.id || makeId("package-group"),
+    name: String(group?.name || "").trim() || `测算组合 ${index + 1}`,
+    iconKey: validProjectGroupIconKey(group?.iconKey) || "home",
+    area: toNumber(group?.area),
+    perimeter: toNumber(group?.perimeter),
+    height: toNumber(group?.height || 2.7),
+    collapsed: Boolean(group?.collapsed),
+    sortOrder: Number.isFinite(Number(group?.sortOrder)) ? Number(group.sortOrder) : index
+  };
+}
+
+function normalizePackageEstimateItem(item, index = 0) {
+  const sourceType = item?.sourceType === "material" || item?.itemType === "material" ? "material" : "labor";
+  return {
+    id: item?.id || makeId("package-item"),
+    groupId: String(item?.groupId || "").trim(),
+    sourceType,
+    itemName: String(item?.itemName || "").trim(),
+    materialId: String(item?.materialId || "").trim(),
+    materialCategory: String(item?.materialCategory || "").trim(),
+    area: String(item?.area || "").trim(),
+    quantity: toNumber(item?.quantity),
+    includedType: ["included", "excluded", "upgrade", "reference"].includes(item?.includedType) ? item.includedType : "included",
     sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index
   };
 }
@@ -541,6 +638,7 @@ function bindEvents() {
   if (els.addPriceItemBtn) els.addPriceItemBtn.addEventListener("click", addLaborItem);
   if (els.addMaterialBtn) els.addMaterialBtn.addEventListener("click", addMaterial);
   if (els.addTemplateBtn) els.addTemplateBtn.addEventListener("click", addTemplate);
+  if (els.addPackageBtn) els.addPackageBtn.addEventListener("click", addPackage);
   if (els.addCategoryBtn) els.addCategoryBtn.addEventListener("click", addCategory);
   if (els.toggleCategoryLibraryBtn) {
     els.toggleCategoryLibraryBtn.addEventListener("click", toggleCategoryLibrary);
@@ -588,6 +686,16 @@ function currentQuote() {
   return state.quotes.find((quote) => quote.id === state.activeQuoteId)
     || state.quotes.find((quote) => quote.customerId === state.activeCustomerId)
     || state.quotes[0];
+}
+
+function currentPackage() {
+  return state.packages.find((entry) => entry.id === state.activePackageId) || state.packages[0];
+}
+
+function currentPackageEstimate(packageEntry = currentPackage()) {
+  return packageEntry?.estimates?.find((estimate) => estimate.id === state.activePackageEstimateId)
+    || packageEntry?.estimates?.find((estimate) => estimate.active)
+    || packageEntry?.estimates?.[0];
 }
 
 function currentCustomer() {
@@ -748,6 +856,7 @@ function renderAll() {
   renderLaborLibrary();
   renderMaterials();
   renderTemplates();
+  renderPackages();
   renderTotalsAndPreview();
 }
 
@@ -3818,13 +3927,17 @@ function getPortableState() {
       categories: state.categories,
       materials: state.materials,
       templates: state.templates,
+      packages: state.packages,
       activeVersionId: state.activeVersionId,
       activePage: state.activePage,
       categoryLibraryCollapsed: state.categoryLibraryCollapsed,
       customers: state.customers,
       quotes: state.quotes,
       activeCustomerId: state.activeCustomerId,
-      activeQuoteId: state.activeQuoteId
+      activeQuoteId: state.activeQuoteId,
+      activePackageId: state.activePackageId,
+      activePackageEstimateId: state.activePackageEstimateId,
+      activePackageTab: state.activePackageTab
     }
   };
 }
@@ -3868,6 +3981,7 @@ function applyImportedState(parsed) {
   state.categories = data.categories || [];
   state.materials = data.materials || [];
   state.templates = data.templates || [];
+  state.packages = data.packages || [];
   state.activeVersionId = data.activeVersionId || data.versions[0]?.id || "";
   state.activePage = data.activePage || "manager";
   state.categoryLibraryCollapsed = data.categoryLibraryCollapsed ?? true;
@@ -3875,6 +3989,9 @@ function applyImportedState(parsed) {
   state.quotes = data.quotes;
   state.activeCustomerId = data.activeCustomerId || data.customers[0]?.id || "";
   state.activeQuoteId = data.activeQuoteId || data.quotes[0]?.id || "";
+  state.activePackageId = data.activePackageId || data.packages?.[0]?.id || "";
+  state.activePackageEstimateId = data.activePackageEstimateId || "";
+  state.activePackageTab = data.activePackageTab === "estimate" ? "estimate" : "description";
   normalizeState();
 }
 
@@ -3916,6 +4033,699 @@ async function writeStateToFileHandle(handle) {
   const writable = await handle.createWritable();
   await writable.write(JSON.stringify(getPortableState(), null, 2));
   await writable.close();
+}
+
+function sortedPackages() {
+  return (state.packages || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+}
+
+function renderPackages() {
+  if (!els.packageList || !els.packageDetail) return;
+  const packages = sortedPackages();
+  if (els.packageCount) els.packageCount.textContent = `${packages.length} 个套餐`;
+  if (!packages.length) {
+    els.packageList.innerHTML = "";
+    els.packageDetail.innerHTML = `
+      <div class="empty-panel">
+        <strong>还没有清工辅料套餐</strong>
+        <p class="muted">先添加一个套餐，再维护套餐说明和成本测算。</p>
+      </div>
+    `;
+    return;
+  }
+  if (!currentPackage()) state.activePackageId = packages[0].id;
+  const activePackage = currentPackage();
+  els.packageList.innerHTML = packages.map((entry) => {
+    const estimate = currentPackageEstimate(entry);
+    const totals = calculatePackageEstimateTotals(entry, estimate);
+    return `
+      <button class="package-card ${entry.id === activePackage?.id ? "active" : ""}" type="button" data-package-id="${escapeHtml(entry.id)}">
+        <strong>${escapeHtml(entry.name)}</strong>
+        <span>${formatMoney(entry.quoteUnitPrice)} / ${escapeHtml(entry.unit || "平米")}</span>
+        <small>测算利润 ${formatMoney(totals.profit)} · ${formatPercent(totals.profitRate)}</small>
+      </button>
+    `;
+  }).join("");
+  els.packageList.querySelectorAll(".package-card").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activePackageId = button.dataset.packageId;
+      const estimate = currentPackageEstimate(currentPackage());
+      state.activePackageEstimateId = estimate?.id || "";
+      saveState("已选择套餐");
+      renderPackages();
+    });
+  });
+  renderPackageDetail(activePackage);
+}
+
+function renderPackageDetail(packageEntry) {
+  if (!packageEntry) return;
+  const estimate = currentPackageEstimate(packageEntry);
+  if (estimate) state.activePackageEstimateId = estimate.id;
+  const totals = calculatePackageEstimateTotals(packageEntry, estimate);
+  const activeTab = state.activePackageTab === "estimate" ? "estimate" : "description";
+  els.packageDetail.innerHTML = `
+    <div class="package-meta">
+      <label>套餐名称<input class="package-name" type="text" value="${escapeHtml(packageEntry.name)}"></label>
+      <label>单位<input class="package-unit" type="text" value="${escapeHtml(packageEntry.unit)}"></label>
+      <label>套餐单价<input class="package-price" type="number" min="0" step="0.01" value="${packageEntry.quoteUnitPrice}"></label>
+      <label>默认公式<input class="package-formula" type="text" value="${escapeHtml(packageEntry.quantityFormula)}"></label>
+      <label class="wide">套餐说明<textarea class="package-description">${escapeHtml(packageEntry.description)}</textarea></label>
+      <label class="wide">不含说明<textarea class="package-exclusion">${escapeHtml(packageEntry.exclusionNote)}</textarea></label>
+    </div>
+    <div class="package-tabs">
+      <button class="package-tab ${activeTab === "description" ? "active" : ""}" type="button" data-package-tab="description">套餐说明</button>
+      <button class="package-tab ${activeTab === "estimate" ? "active" : ""}" type="button" data-package-tab="estimate">成本测算</button>
+    </div>
+    <div class="package-tab-content">
+      ${activeTab === "description" ? `
+      <section class="package-block package-block-full">
+        <div class="section-title tight-title">
+          <div>
+            <h3>套餐说明</h3>
+            <p class="muted">给客户看的所含基础项目及说明。</p>
+          </div>
+          <button class="add-package-section ghost" type="button">添加分类</button>
+        </div>
+        <div class="package-section-list">
+          ${renderPackageSections(packageEntry)}
+        </div>
+      </section>
+      ` : `
+      <section class="package-block package-block-full">
+        <div class="section-title tight-title">
+          <div>
+            <h3>成本测算</h3>
+            <p class="muted">内部模拟户型，用工费库和主材库推演成本。</p>
+          </div>
+          <button class="add-package-estimate ghost" type="button">添加测算</button>
+        </div>
+        ${renderPackageEstimateSelector(packageEntry, estimate)}
+        ${renderPackageEstimateSummary(packageEntry, estimate, totals)}
+        ${renderPackageEstimateEditor(packageEntry, estimate)}
+      </section>
+      `}
+    </div>
+  `;
+  bindPackageDetail(packageEntry, estimate);
+}
+
+function renderPackageSections(packageEntry) {
+  const sections = (packageEntry.sections || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  if (!sections.length) return `<p class="muted empty-line">暂无说明分类。</p>`;
+  return sections.map((section) => `
+    <div class="package-section" data-section-id="${escapeHtml(section.id)}">
+      <div class="package-section-head">
+        <input class="package-section-name" type="text" value="${escapeHtml(section.name)}">
+        <button class="add-package-section-item ghost" type="button">添加项目</button>
+        <button class="delete-package-section danger" type="button">删除分类</button>
+      </div>
+      <div class="package-section-table">
+        <div class="package-section-row header">
+          <span>项目</span><span>品牌/施工</span><span>工艺说明</span><span>操作</span>
+        </div>
+        ${(section.items || []).slice().sort((a, b) => a.sortOrder - b.sortOrder).map((item) => `
+          <div class="package-section-row" data-section-item-id="${escapeHtml(item.id)}">
+            <input class="section-item-name" type="text" value="${escapeHtml(item.name)}">
+            <input class="section-item-provider" type="text" value="${escapeHtml(item.provider)}">
+            <textarea class="section-item-description">${escapeHtml(item.description)}</textarea>
+            <button class="delete-section-item danger" type="button">删除</button>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderPackageEstimateSelector(packageEntry, estimate) {
+  const estimates = (packageEntry.estimates || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  return `
+    <div class="package-estimate-tabs">
+      ${estimates.map((entry) => `
+        <button class="package-estimate-tab ${entry.id === estimate?.id ? "active" : ""}" type="button" data-estimate-id="${escapeHtml(entry.id)}">${escapeHtml(entry.name)}</button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderPackageEstimateSummary(packageEntry, estimate, totals) {
+  if (!estimate) return "";
+  return `
+    <div class="package-estimate-meta">
+      <label>测算名称<input class="estimate-name" type="text" value="${escapeHtml(estimate.name)}"></label>
+      <label>建筑面积<input class="estimate-building-area" type="number" min="0" step="0.01" value="${estimate.buildingArea}"></label>
+      <label>面积<input class="estimate-area" type="number" min="0" step="0.01" value="${estimate.area}"></label>
+      <label>周长<input class="estimate-perimeter" type="number" min="0" step="0.01" value="${estimate.perimeter}"></label>
+      <label>高度<input class="estimate-height" type="number" min="0" step="0.01" value="${estimate.height}"></label>
+      <label>测算单价<input class="estimate-price" type="number" min="0" step="0.01" value="${estimate.quoteUnitPrice || packageEntry.quoteUnitPrice}"></label>
+    </div>
+    <div class="package-estimate-summary">
+      <div><span>套餐报价</span><strong>${formatMoney(totals.quoteTotal)}</strong></div>
+      <div><span>清工辅料成本</span><strong>${formatMoney(totals.laborCost)}</strong></div>
+      <div><span>装修主材成本</span><strong>${formatMoney(totals.materialCost)}</strong></div>
+      <div><span>总成本</span><strong>${formatMoney(totals.totalCost)}</strong></div>
+      <div><span>利润</span><strong>${formatMoney(totals.profit)}</strong></div>
+      <div><span>利润率</span><strong>${formatPercent(totals.profitRate)}</strong></div>
+    </div>
+  `;
+}
+
+function renderPackageEstimateEditor(packageEntry, estimate) {
+  if (!estimate) return "";
+  const groups = (estimate.groups || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  return `
+    <div class="package-estimate-actions">
+      <button class="add-estimate-group ghost" type="button">添加测算组合</button>
+      <button class="delete-estimate danger" type="button">删除测算</button>
+    </div>
+    <div class="package-estimate-groups">
+      ${groups.map((group) => renderPackageEstimateGroup(estimate, group)).join("")}
+    </div>
+  `;
+}
+
+function renderPackageEstimateGroup(estimate, group) {
+  const items = (estimate.items || []).filter((item) => item.groupId === group.id).sort((a, b) => a.sortOrder - b.sortOrder);
+  return `
+    <section class="package-estimate-group" data-group-id="${escapeHtml(group.id)}">
+      <div class="package-estimate-group-head">
+        <input class="estimate-group-name" type="text" value="${escapeHtml(group.name)}">
+        <label>面积<input class="estimate-group-area" type="number" min="0" step="0.01" value="${group.area}"></label>
+        <label>周长<input class="estimate-group-perimeter" type="number" min="0" step="0.01" value="${group.perimeter}"></label>
+        <label>高度<input class="estimate-group-height" type="number" min="0" step="0.01" value="${group.height}"></label>
+        <button class="add-estimate-labor" type="button">添加工费</button>
+        <button class="add-estimate-material ghost" type="button">添加主材</button>
+        <button class="delete-estimate-group danger" type="button">删除组合</button>
+      </div>
+      <div class="package-estimate-table">
+        <div class="package-estimate-row header">
+          <span>类型</span><span>项目名称</span><span>部位</span><span>工程量</span><span>单位</span><span>报价单价</span><span>成本单价</span><span>成本金额</span><span>归类</span><span>操作</span>
+        </div>
+        ${items.map((item) => renderPackageEstimateItem(estimate, group, item)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderPackageEstimateItem(estimate, group, item) {
+  const data = packageEstimateItemPricing(item);
+  return `
+    <div class="package-estimate-row" data-item-id="${escapeHtml(item.id)}">
+      <select class="estimate-item-type">
+        <option value="labor" ${item.sourceType === "labor" ? "selected" : ""}>工费</option>
+        <option value="material" ${item.sourceType === "material" ? "selected" : ""}>主材</option>
+      </select>
+      <label class="suggest-wrap">
+        <input class="estimate-item-name" type="text" value="${escapeHtml(data.name)}" placeholder="${item.sourceType === "material" ? "输入主材名称" : "输入工费名称"}">
+        <div class="suggestions"></div>
+      </label>
+      <input class="estimate-item-area" type="text" value="${escapeHtml(item.area)}" placeholder="可空">
+      <input class="estimate-item-quantity" type="number" min="0" step="0.01" value="${item.quantity}">
+      <span class="readonly-cell">${escapeHtml(data.unit)}</span>
+      <span class="readonly-cell">${formatMoney(data.quoteUnitPrice)}</span>
+      <span class="readonly-cell">${formatMoney(data.costUnitPrice)}</span>
+      <strong class="readonly-cell">${formatMoney(data.costAmount)}</strong>
+      <select class="estimate-item-included">
+        <option value="included" ${item.includedType === "included" ? "selected" : ""}>套餐内</option>
+        <option value="excluded" ${item.includedType === "excluded" ? "selected" : ""}>套餐外</option>
+        <option value="upgrade" ${item.includedType === "upgrade" ? "selected" : ""}>升级项</option>
+        <option value="reference" ${item.includedType === "reference" ? "selected" : ""}>仅参考</option>
+      </select>
+      <button class="delete-estimate-item danger" type="button">删除</button>
+    </div>
+  `;
+}
+
+function bindPackageDetail(packageEntry, estimate) {
+  bindPackageMetaInputs(packageEntry);
+  els.packageDetail.querySelectorAll(".package-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activePackageTab = button.dataset.packageTab === "estimate" ? "estimate" : "description";
+      saveState("已切换套餐页面");
+      renderPackages();
+    });
+  });
+  bindPackageSectionInputs(packageEntry);
+  bindPackageEstimateInputs(packageEntry, estimate);
+}
+
+function bindPackageMetaInputs(packageEntry) {
+  const setValue = (selector, key, mode = "text") => {
+    const input = els.packageDetail.querySelector(selector);
+    if (!input) return;
+    input.addEventListener("input", (event) => {
+      packageEntry[key] = mode === "number" ? toNumber(event.target.value) : event.target.value;
+      saveState("已更新套餐");
+    });
+    input.addEventListener("change", () => renderPackages());
+  };
+  setValue(".package-name", "name");
+  setValue(".package-unit", "unit");
+  setValue(".package-price", "quoteUnitPrice", "number");
+  setValue(".package-formula", "quantityFormula");
+  setValue(".package-description", "description");
+  setValue(".package-exclusion", "exclusionNote");
+  els.packageDetail.querySelector(".add-package-section")?.addEventListener("click", () => addPackageSection(packageEntry));
+  els.packageDetail.querySelector(".add-package-estimate")?.addEventListener("click", () => addPackageEstimate(packageEntry));
+}
+
+function bindPackageSectionInputs(packageEntry) {
+  els.packageDetail.querySelectorAll(".package-section").forEach((node) => {
+    const section = packageEntry.sections.find((entry) => entry.id === node.dataset.sectionId);
+    if (!section) return;
+    node.querySelector(".package-section-name")?.addEventListener("input", (event) => {
+      section.name = event.target.value;
+      saveState("已更新套餐说明");
+    });
+    node.querySelector(".add-package-section-item")?.addEventListener("click", () => addPackageSectionItem(section));
+    node.querySelector(".delete-package-section")?.addEventListener("click", () => deletePackageSection(packageEntry, section));
+    node.querySelectorAll(".package-section-row[data-section-item-id]").forEach((row) => {
+      const item = section.items.find((entry) => entry.id === row.dataset.sectionItemId);
+      if (!item) return;
+      [
+        [".section-item-name", "name"],
+        [".section-item-provider", "provider"],
+        [".section-item-description", "description"]
+      ].forEach(([selector, key]) => {
+        row.querySelector(selector)?.addEventListener("input", (event) => {
+          item[key] = event.target.value;
+          saveState("已更新套餐说明");
+        });
+      });
+      row.querySelector(".delete-section-item")?.addEventListener("click", () => deletePackageSectionItem(section, item));
+    });
+  });
+}
+
+function bindPackageEstimateInputs(packageEntry, estimate) {
+  if (!estimate) return;
+  els.packageDetail.querySelectorAll(".package-estimate-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activePackageEstimateId = button.dataset.estimateId;
+      packageEntry.estimates.forEach((entry) => { entry.active = entry.id === state.activePackageEstimateId; });
+      saveState("已切换套餐测算");
+      renderPackages();
+    });
+  });
+  const setEstimateValue = (selector, key, mode = "text") => {
+    const input = els.packageDetail.querySelector(selector);
+    if (!input) return;
+    input.addEventListener("input", (event) => {
+      estimate[key] = mode === "number" ? toNumber(event.target.value) : event.target.value;
+      if (key === "quoteUnitPrice" && !estimate.quoteUnitPrice) estimate.quoteUnitPrice = 0;
+      saveState("已更新测算");
+    });
+    input.addEventListener("keydown", blurOnEnter);
+    input.addEventListener("change", () => renderPackages());
+  };
+  setEstimateValue(".estimate-name", "name");
+  setEstimateValue(".estimate-building-area", "buildingArea", "number");
+  setEstimateValue(".estimate-area", "area", "number");
+  setEstimateValue(".estimate-perimeter", "perimeter", "number");
+  setEstimateValue(".estimate-height", "height", "number");
+  setEstimateValue(".estimate-price", "quoteUnitPrice", "number");
+  els.packageDetail.querySelector(".add-estimate-group")?.addEventListener("click", () => addPackageEstimateGroup(estimate));
+  els.packageDetail.querySelector(".delete-estimate")?.addEventListener("click", () => deletePackageEstimate(packageEntry, estimate));
+  bindPackageEstimateGroups(packageEntry, estimate);
+}
+
+function bindPackageEstimateGroups(packageEntry, estimate) {
+  els.packageDetail.querySelectorAll(".package-estimate-group").forEach((node) => {
+    const group = estimate.groups.find((entry) => entry.id === node.dataset.groupId);
+    if (!group) return;
+    [
+      [".estimate-group-name", "name", "text"],
+      [".estimate-group-area", "area", "number"],
+      [".estimate-group-perimeter", "perimeter", "number"],
+      [".estimate-group-height", "height", "number"]
+    ].forEach(([selector, key, mode]) => {
+      node.querySelector(selector)?.addEventListener("input", (event) => {
+        group[key] = mode === "number" ? toNumber(event.target.value) : event.target.value;
+        saveState("已更新测算组合");
+      });
+      node.querySelector(selector)?.addEventListener("keydown", blurOnEnter);
+      node.querySelector(selector)?.addEventListener("change", () => renderPackages());
+    });
+    node.querySelector(".add-estimate-labor")?.addEventListener("click", () => addPackageEstimateItem(estimate, group, "labor"));
+    node.querySelector(".add-estimate-material")?.addEventListener("click", () => addPackageEstimateItem(estimate, group, "material"));
+    node.querySelector(".delete-estimate-group")?.addEventListener("click", () => deletePackageEstimateGroup(estimate, group));
+    bindPackageEstimateItemRows(packageEntry, estimate, group, node);
+  });
+}
+
+function bindPackageEstimateItemRows(packageEntry, estimate, group, node) {
+  node.querySelectorAll(".package-estimate-row[data-item-id]").forEach((row) => {
+    const item = estimate.items.find((entry) => entry.id === row.dataset.itemId);
+    if (!item) return;
+    row.querySelector(".estimate-item-type")?.addEventListener("change", (event) => {
+      item.sourceType = event.target.value === "material" ? "material" : "labor";
+      item.itemName = "";
+      item.materialId = "";
+      item.materialCategory = "";
+      saveState("已切换测算条目类型");
+      renderPackages();
+    });
+    const nameInput = row.querySelector(".estimate-item-name");
+    const suggestions = row.querySelector(".suggestions");
+    if (nameInput && suggestions) {
+      nameInput.addEventListener("input", () => {
+        if (item.sourceType === "material") {
+          renderPackageMaterialSuggestions(suggestions, item, nameInput.value);
+        } else {
+          renderPackageLaborSuggestions(suggestions, item, nameInput.value, estimate, group);
+        }
+      });
+      nameInput.addEventListener("focus", () => {
+        if (item.sourceType === "material") {
+          renderPackageMaterialSuggestions(suggestions, item, nameInput.value);
+        } else {
+          renderPackageLaborSuggestions(suggestions, item, nameInput.value, estimate, group);
+        }
+      });
+      nameInput.addEventListener("blur", () => setTimeout(() => { suggestions.innerHTML = ""; }, 120));
+      nameInput.addEventListener("keydown", (event) => handlePackageSuggestionKeys(event, suggestions, item, estimate, group));
+    }
+    row.querySelector(".estimate-item-area")?.addEventListener("keydown", blurOnEnter);
+    row.querySelector(".estimate-item-area")?.addEventListener("input", (event) => {
+      item.area = event.target.value;
+      saveState("已更新测算条目");
+    });
+    const quantityInput = row.querySelector(".estimate-item-quantity");
+    quantityInput?.addEventListener("focus", (event) => event.target.select());
+    quantityInput?.addEventListener("keydown", blurOnEnter);
+    quantityInput?.addEventListener("input", (event) => {
+      item.quantity = toNumber(event.target.value);
+      saveState("已更新测算工程量");
+    });
+    quantityInput?.addEventListener("change", () => renderPackages());
+    row.querySelector(".estimate-item-included")?.addEventListener("change", (event) => {
+      item.includedType = event.target.value;
+      saveState("已更新测算归类");
+      renderPackages();
+    });
+    row.querySelector(".delete-estimate-item")?.addEventListener("click", () => {
+      estimate.items = estimate.items.filter((entry) => entry.id !== item.id);
+      saveState("已删除测算条目");
+      renderPackages();
+    });
+  });
+}
+
+function addPackage() {
+  const entry = normalizePackage({
+    id: makeId("package"),
+    name: createUniquePackageName(),
+    unit: "平米",
+    quoteUnitPrice: 400,
+    description: "清工辅料基础套餐，包含基础施工、基层处理、水电基础改造、瓦工辅料、油工基础施工等。",
+    exclusionNote: "不含瓷砖、木门、柜体、洁具、灯具、电器等装修主材。",
+    sortOrder: sortedPackages().length
+  }, sortedPackages().length);
+  state.packages.push(entry);
+  state.activePackageId = entry.id;
+  state.activePackageEstimateId = entry.estimates[0]?.id || "";
+  saveState("已添加套餐");
+  renderAll();
+}
+
+function createUniquePackageName() {
+  let index = state.packages.length + 1;
+  while (state.packages.some((entry) => entry.name === `清工辅料套餐 ${index}`)) index += 1;
+  return `清工辅料套餐 ${index}`;
+}
+
+function addPackageSection(packageEntry) {
+  packageEntry.sections.push(normalizePackageSection({
+    name: `说明分类 ${packageEntry.sections.length + 1}`,
+    sortOrder: packageEntry.sections.length
+  }, packageEntry.sections.length));
+  saveState("已添加套餐说明分类");
+  renderPackages();
+}
+
+function addPackageSectionItem(section) {
+  section.items.push(normalizePackageSectionItem({
+    name: "",
+    unit: "",
+    provider: "",
+    description: "",
+    sortOrder: section.items.length
+  }, section.items.length));
+  saveState("已添加套餐说明项目");
+  renderPackages();
+}
+
+function deletePackageSection(packageEntry, section) {
+  if (!confirm(`删除说明分类“${section.name}”？`)) return;
+  packageEntry.sections = packageEntry.sections.filter((entry) => entry.id !== section.id);
+  packageEntry.sections.forEach((entry, index) => { entry.sortOrder = index; });
+  saveState("已删除套餐说明分类");
+  renderPackages();
+}
+
+function deletePackageSectionItem(section, item) {
+  section.items = section.items.filter((entry) => entry.id !== item.id);
+  section.items.forEach((entry, index) => { entry.sortOrder = index; });
+  saveState("已删除套餐说明项目");
+  renderPackages();
+}
+
+function addPackageEstimate(packageEntry) {
+  const estimate = normalizePackageEstimate({
+    name: `${packageEntry.name}测算 ${packageEntry.estimates.length + 1}`,
+    buildingArea: 143,
+    quoteUnitPrice: packageEntry.quoteUnitPrice,
+    active: true,
+    sortOrder: packageEntry.estimates.length
+  }, packageEntry.estimates.length);
+  packageEntry.estimates.forEach((entry) => { entry.active = false; });
+  packageEntry.estimates.push(estimate);
+  state.activePackageEstimateId = estimate.id;
+  saveState("已添加套餐测算");
+  renderPackages();
+}
+
+function deletePackageEstimate(packageEntry, estimate) {
+  if (packageEntry.estimates.length <= 1) {
+    alert("至少保留一个测算案例。");
+    return;
+  }
+  if (!confirm(`删除测算“${estimate.name}”？`)) return;
+  packageEntry.estimates = packageEntry.estimates.filter((entry) => entry.id !== estimate.id);
+  packageEntry.estimates.forEach((entry, index) => { entry.sortOrder = index; entry.active = index === 0; });
+  state.activePackageEstimateId = packageEntry.estimates[0]?.id || "";
+  saveState("已删除套餐测算");
+  renderPackages();
+}
+
+function addPackageEstimateGroup(estimate) {
+  estimate.groups.push(normalizePackageEstimateGroup({
+    name: `测算组合 ${estimate.groups.length + 1}`,
+    sortOrder: estimate.groups.length
+  }, estimate.groups.length));
+  saveState("已添加测算组合");
+  renderPackages();
+}
+
+function deletePackageEstimateGroup(estimate, group) {
+  if (!confirm(`删除测算组合“${group.name}”？组合内条目也会删除。`)) return;
+  estimate.groups = estimate.groups.filter((entry) => entry.id !== group.id);
+  estimate.items = estimate.items.filter((entry) => entry.groupId !== group.id);
+  estimate.groups.forEach((entry, index) => { entry.sortOrder = index; });
+  saveState("已删除测算组合");
+  renderPackages();
+}
+
+function addPackageEstimateItem(estimate, group, sourceType) {
+  estimate.items.push(normalizePackageEstimateItem({
+    groupId: group.id,
+    sourceType,
+    sortOrder: estimate.items.length,
+    includedType: "included"
+  }, estimate.items.length));
+  saveState(sourceType === "material" ? "已添加测算主材" : "已添加测算工费");
+  renderPackages();
+}
+
+function packageEstimateItemPricing(item) {
+  if (item.sourceType === "material") {
+    const material = findMaterial(item.materialId);
+    const quoteUnitPrice = toNumber(material?.quoteUnitPrice);
+    const costUnitPrice = toNumber(material?.costUnitPrice);
+    return {
+      name: material?.name || item.itemName || "",
+      unit: material?.unit || "",
+      quoteUnitPrice,
+      costUnitPrice,
+      costAmount: toNumber(item.quantity) * costUnitPrice
+    };
+  }
+  const laborItem = findLaborItem(item.itemName);
+  const quoteUnitPrice = calculateLaborItemUnitPrice(laborItem);
+  const costUnitPrice = calculateLaborItemCostUnitPrice(laborItem);
+  return {
+    name: item.itemName || "",
+    unit: laborItem?.unit || parsePriceNameUnit(laborItem?.name || item.itemName)?.unit || "",
+    quoteUnitPrice,
+    costUnitPrice,
+    costAmount: toNumber(item.quantity) * costUnitPrice
+  };
+}
+
+function calculatePackageEstimateTotals(packageEntry, estimate) {
+  if (!estimate) return { quoteTotal: 0, laborCost: 0, materialCost: 0, totalCost: 0, profit: 0, profitRate: 0 };
+  const quantity = toNumber(estimate.buildingArea || estimate.area);
+  const quoteUnitPrice = toNumber(estimate.quoteUnitPrice || packageEntry?.quoteUnitPrice);
+  const quoteTotal = quantity * quoteUnitPrice;
+  let laborCost = 0;
+  let materialCost = 0;
+  (estimate.items || []).forEach((item) => {
+    if (item.includedType === "reference") return;
+    const pricing = packageEstimateItemPricing(item);
+    if (item.sourceType === "material") materialCost += pricing.costAmount;
+    else laborCost += pricing.costAmount;
+  });
+  const totalCost = laborCost + materialCost;
+  const profit = quoteTotal - totalCost;
+  return {
+    quoteTotal,
+    laborCost,
+    materialCost,
+    totalCost,
+    profit,
+    profitRate: quoteTotal ? profit / quoteTotal : 0
+  };
+}
+
+function renderPackageLaborSuggestions(container, item, query, estimate, group) {
+  const cleaned = normalizeName(query);
+  if (!cleaned) {
+    container.innerHTML = "";
+    container.dataset.activeIndex = "-1";
+    return;
+  }
+  const matches = findComparableItems(cleaned, 6);
+  if (!matches.length) {
+    container.innerHTML = `<div class="suggestion-hint">没有找到匹配工费，可以先到工费库添加。</div>`;
+    container.dataset.activeIndex = "-1";
+    return;
+  }
+  container.innerHTML = `
+    <div class="suggestion-hint">找到相似工费项，选择后用于测算成本。</div>
+    ${matches.map((laborItem) => `
+      <button class="suggestion" type="button" data-item-name="${escapeHtml(laborItem.name)}">
+        <span>
+          <strong>${escapeHtml(laborItem.name)}</strong>
+          <small>${escapeHtml(laborItem.category || "未分类")} · ${escapeHtml(laborItem.unit || "项")}</small>
+        </span>
+        <b>${formatMoney(calculateLaborItemCostUnitPrice(laborItem))}</b>
+      </button>
+    `).join("")}
+  `;
+  container.querySelectorAll(".suggestion").forEach((button) => {
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectPackageLaborSuggestion(item, button.dataset.itemName, estimate, group);
+    });
+  });
+  container.dataset.activeIndex = "0";
+  updateActiveSuggestion(container);
+}
+
+function renderPackageMaterialSuggestions(container, item, query) {
+  const cleaned = normalizeName(query);
+  if (!cleaned) {
+    container.innerHTML = "";
+    container.dataset.activeIndex = "-1";
+    return;
+  }
+  const matches = findSimilarMaterials(cleaned).slice(0, 6);
+  if (!matches.length) {
+    container.innerHTML = `<div class="suggestion-hint">没有找到匹配主材，可以先到主材库添加。</div>`;
+    container.dataset.activeIndex = "-1";
+    return;
+  }
+  container.innerHTML = `
+    <div class="suggestion-hint">找到相似主材，选择后用于测算成本。</div>
+    ${matches.map((material) => `
+      <button class="suggestion" type="button" data-material-id="${escapeHtml(material.id)}">
+        <span>
+          <strong>${escapeHtml(material.name)}</strong>
+          <small>${escapeHtml(material.primaryCategory || "未分类")} · ${escapeHtml(material.unit || "项")}</small>
+        </span>
+        <b>${formatMoney(material.costUnitPrice)}</b>
+      </button>
+    `).join("")}
+  `;
+  container.querySelectorAll(".suggestion").forEach((button) => {
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      selectPackageMaterialSuggestion(item, button.dataset.materialId);
+    });
+  });
+  container.dataset.activeIndex = "0";
+  updateActiveSuggestion(container);
+}
+
+function handlePackageSuggestionKeys(event, container, item, estimate, group) {
+  const buttons = [...container.querySelectorAll(".suggestion")];
+  if (event.key === "Escape") {
+    container.innerHTML = "";
+    container.dataset.activeIndex = "-1";
+    return;
+  }
+  if (!buttons.length || !["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
+  event.preventDefault();
+  let index = Number(container.dataset.activeIndex || 0);
+  if (event.key === "ArrowDown") index = Math.min(index + 1, buttons.length - 1);
+  if (event.key === "ArrowUp") index = Math.max(index - 1, 0);
+  container.dataset.activeIndex = String(index);
+  updateActiveSuggestion(container);
+  if (event.key !== "Enter") return;
+  const button = buttons[index];
+  if (item.sourceType === "material") selectPackageMaterialSuggestion(item, button.dataset.materialId);
+  else selectPackageLaborSuggestion(item, button.dataset.itemName, estimate, group);
+}
+
+function selectPackageLaborSuggestion(item, itemName, estimate, group) {
+  const laborItem = findLaborItem(itemName);
+  if (!laborItem) return;
+  item.sourceType = "labor";
+  item.itemName = laborItem.name;
+  item.materialId = "";
+  const recommended = evaluatePackageItemQuantity(laborItem.quantityFormula, estimate, group);
+  if (recommended !== null) item.quantity = roundQuantity(recommended);
+  saveState("已选择测算工费");
+  renderPackages();
+}
+
+function selectPackageMaterialSuggestion(item, materialId) {
+  const material = findMaterial(materialId);
+  if (!material) return;
+  item.sourceType = "material";
+  item.materialId = material.id;
+  item.itemName = material.name;
+  item.materialCategory = material.primaryCategory || material.category || "";
+  saveState("已选择测算主材");
+  renderPackages();
+}
+
+function evaluatePackageItemQuantity(formula, estimate, group) {
+  return evaluateQuantityFormula(formula || DEFAULT_QUANTITY_FORMULA, {
+    s: toNumber(group?.area || estimate?.area || estimate?.buildingArea),
+    c: toNumber(group?.perimeter || estimate?.perimeter),
+    h: toNumber(group?.height || estimate?.height)
+  });
+}
+
+function blurOnEnter(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  event.currentTarget.blur();
+}
+
+function formatPercent(value) {
+  return `${(toNumber(value) * 100).toFixed(1)}%`;
 }
 
 function deleteLaborItem(itemName) {
