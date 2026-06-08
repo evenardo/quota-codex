@@ -8,12 +8,27 @@ import { DatabaseSync } from "node:sqlite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
-const dataDir = path.join(__dirname, "data");
+const dataDir = process.env.QUOTE_DATA_DIR ? path.resolve(process.env.QUOTE_DATA_DIR) : path.join(__dirname, "data");
 const sqliteFile = path.join(dataDir, "quote-data.sqlite");
 const backupDir = path.join(dataDir, "backups");
 const port = Number(process.env.PORT || 5177);
 const backupIntervalMinutes = Number(process.env.BACKUP_INTERVAL_MINUTES || 10);
 const DEFAULT_QUANTITY_FORMULA = "q=s+c*(h-0.25)";
+const APP_STATE_FIELDS = [
+  ["activeVersionId", ""],
+  ["activePage", "manager"],
+  ["categoryLibraryCollapsed", true, (value) => value !== "false"],
+  ["activeCustomerId", ""],
+  ["activeQuoteId", ""],
+  ["activePackageId", ""],
+  ["activePackageEstimateId", ""],
+  ["activePackageTab", "description", (value) => value || "description", (value) => value === "estimate" ? "estimate" : "description"],
+  ["returnToPackageId", ""],
+  ["returnToPackageEstimateId", ""],
+  ["returnToPackageItemId", ""],
+  ["returnToTemplateId", ""],
+  ["returnToTemplateItemId", ""]
+];
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -26,11 +41,9 @@ const mimeTypes = {
   ".jpeg": "image/jpeg"
 };
 
-await mkdir(dataDir, { recursive: true });
-const db = new DatabaseSync(sqliteFile);
-initializeDatabase();
+let db = null;
 
-const server = createServer(async (req, res) => {
+async function handleRequest(req, res) {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
     if (url.pathname === "/api/data" && req.method === "GET") {
@@ -55,15 +68,30 @@ const server = createServer(async (req, res) => {
   } catch (error) {
     sendJson(res, 500, { error: error.message || "Server error" });
   }
-});
+}
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`报价系统已启动：http://127.0.0.1:${port}`);
-  console.log(`SQLite 数据库：${sqliteFile}`);
-  console.log("Data source: SQLite tables. JSON seed files are not used.");
-});
+export async function startQuoteServer() {
+  await mkdir(dataDir, { recursive: true });
+  db = new DatabaseSync(sqliteFile);
+  initializeDatabase();
+  const server = createServer(handleRequest);
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`报价系统已启动：http://127.0.0.1:${port}`);
+    console.log(`SQLite 数据库：${sqliteFile}`);
+    console.log("Data source: SQLite tables. JSON seed files are not used.");
+  });
 
-scheduleAutomaticBackups();
+  scheduleAutomaticBackups();
+  return server;
+}
+
+function isMainModule() {
+  return Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+}
+
+if (isMainModule()) {
+  await startQuoteServer();
+}
 
 function initializeDatabase() {
   migrateReadableDatabaseNames();
@@ -104,6 +132,7 @@ function initializeDatabase() {
       unit_price REAL DEFAULT 0,
       cost_unit_price REAL DEFAULT 0,
       quantity_formula TEXT,
+      quantity_round_down INTEGER DEFAULT 0,
       FOREIGN KEY (version_id) REFERENCES price_versions(id) ON DELETE CASCADE,
       FOREIGN KEY (category_id) REFERENCES labor_categories(id)
     );
@@ -127,6 +156,17 @@ function initializeDatabase() {
       pricing_formula TEXT,
       note TEXT
     );
+    CREATE TABLE IF NOT EXISTS material_kinds (
+      id TEXT PRIMARY KEY,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      name TEXT NOT NULL UNIQUE,
+      primary_category TEXT,
+      unit TEXT,
+      cost_unit_price REAL DEFAULT 0,
+      quote_unit_price REAL DEFAULT 0,
+      match_group TEXT,
+      note TEXT
+    );
     CREATE TABLE IF NOT EXISTS project_group_templates (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -140,6 +180,7 @@ function initializeDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 0,
       item_type TEXT DEFAULT 'labor',
       item_name TEXT,
+      material_kind_id TEXT,
       material_id TEXT,
       material_category TEXT,
       area TEXT,
@@ -164,15 +205,21 @@ function initializeDatabase() {
       package_id TEXT NOT NULL,
       name TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
+      collapsed INTEGER DEFAULT 0,
       FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE
     );
     CREATE TABLE IF NOT EXISTS package_section_items (
       id TEXT PRIMARY KEY,
       section_id TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
+      source_type TEXT DEFAULT 'labor',
       name TEXT,
+      item_name TEXT,
+      material_id TEXT,
+      material_category TEXT,
       unit TEXT,
       provider TEXT,
+      area TEXT,
       description TEXT,
       FOREIGN KEY (section_id) REFERENCES package_sections(id) ON DELETE CASCADE
     );
@@ -192,8 +239,10 @@ function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS package_estimate_groups (
       id TEXT PRIMARY KEY,
       estimate_id TEXT NOT NULL,
+      package_section_id TEXT,
       name TEXT NOT NULL,
       icon_key TEXT,
+      count REAL DEFAULT 1,
       area REAL DEFAULT 0,
       perimeter REAL DEFAULT 0,
       height REAL DEFAULT 0,
@@ -205,6 +254,7 @@ function initializeDatabase() {
       id TEXT PRIMARY KEY,
       estimate_id TEXT NOT NULL,
       group_id TEXT,
+      package_section_item_id TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       item_type TEXT DEFAULT 'labor',
       labor_item_name TEXT,
@@ -303,10 +353,20 @@ function initializeDatabase() {
   ensureColumn("packages", "quantity_formula", "TEXT");
   ensureColumn("packages", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("packages", "exclusion_note", "TEXT");
+  ensureColumn("package_sections", "collapsed", "INTEGER DEFAULT 0");
+  ensureColumn("package_section_items", "source_type", "TEXT DEFAULT 'labor'");
+  ensureColumn("package_section_items", "item_name", "TEXT");
+  ensureColumn("package_section_items", "material_id", "TEXT");
+  ensureColumn("package_section_items", "material_category", "TEXT");
+  ensureColumn("package_section_items", "area", "TEXT");
   ensureColumn("package_estimates", "active", "INTEGER DEFAULT 0");
+  ensureColumn("package_estimate_groups", "package_section_id", "TEXT");
+  ensureColumn("package_estimate_groups", "count", "REAL DEFAULT 1");
+  ensureColumn("package_estimate_items", "package_section_item_id", "TEXT");
   ensureColumn("labor_items", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("labor_items", "category_id", "TEXT");
   ensureColumn("labor_items", "quantity_formula", "TEXT");
+  ensureColumn("labor_items", "quantity_round_down", "INTEGER DEFAULT 0");
   ensureColumn("labor_items", "uses_material", "INTEGER DEFAULT 0");
   ensureColumn("labor_items", "material_category", "TEXT");
   ensureColumn("labor_items", "material_subcategory", "TEXT");
@@ -314,6 +374,7 @@ function initializeDatabase() {
   ensureColumn("labor_categories", "description", "TEXT");
   ensureColumn("labor_categories", "sort_order", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("materials", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("materials", "material_kind_id", "TEXT");
   ensureColumn("materials", "category", "TEXT");
   ensureColumn("materials", "primary_category", "TEXT");
   ensureColumn("materials", "secondary_category", "TEXT");
@@ -328,7 +389,13 @@ function initializeDatabase() {
   ensureColumn("materials", "supplier", "TEXT");
   ensureColumn("materials", "pricing_formula", "TEXT");
   ensureColumn("materials", "note", "TEXT");
+  ensureColumn("material_kinds", "cost_unit_price", "REAL DEFAULT 0");
+  ensureColumn("material_kinds", "quote_unit_price", "REAL DEFAULT 0");
   ensureColumn("quote_items", "material_id", "TEXT");
+  ensureColumn("quote_items", "material_kind_id", "TEXT");
+  ensureColumn("project_group_template_items", "material_kind_id", "TEXT");
+  ensureColumn("package_section_items", "material_kind_id", "TEXT");
+  ensureColumn("package_estimate_items", "material_kind_id", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_labor_items_category ON labor_items(category_id)");
   migratePriceCategories();
   migrateIdsToUuidV7();
@@ -521,6 +588,7 @@ function migrateLaborItemsToUuidV7() {
       unit_price REAL DEFAULT 0,
       cost_unit_price REAL DEFAULT 0,
       quantity_formula TEXT,
+      quantity_round_down INTEGER DEFAULT 0,
       uses_material INTEGER DEFAULT 0,
       material_category TEXT,
       material_subcategory TEXT,
@@ -534,8 +602,8 @@ function migrateLaborItemsToUuidV7() {
     INSERT INTO labor_items_uuidv7 (
       id, version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
       cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price, quantity_formula,
-      uses_material, material_category, material_subcategory, default_material_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      quantity_round_down, uses_material, material_category, material_subcategory, default_material_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   rows.forEach((row) => {
     const currentId = String(row.id || "");
@@ -559,6 +627,7 @@ function migrateLaborItemsToUuidV7() {
       toNumber(row.unit_price),
       toNumber(row.cost_unit_price),
       row.quantity_formula || DEFAULT_QUANTITY_FORMULA,
+      row.quantity_round_down ? 1 : 0,
       row.uses_material ? 1 : 0,
       row.material_category || "",
       row.material_subcategory || "",
@@ -598,7 +667,18 @@ function databaseHasWorkingData() {
 
 async function handlePostData(req, res) {
   const body = await readBody(req);
-  const parsed = JSON.parse(body);
+  let parsed = null;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+  const data = parsed?.data || parsed;
+  if (!data || !Array.isArray(data.versions) || !Array.isArray(data.customers) || !Array.isArray(data.quotes)) {
+    sendJson(res, 400, { error: "Invalid quote data" });
+    return;
+  }
   if (hasQuestionMarkEncodingDamage(parsed?.data || parsed)) {
     sendJson(res, 400, {
       error: "检测到大量中文字段疑似被编码转换成问号，已阻止写入数据库。请检查导入/保存来源的 UTF-8 编码。"
@@ -697,7 +777,7 @@ async function cleanupAutomaticBackups() {
   await Promise.all(expiredBackups.map((entry) => unlink(path.join(backupDir, entry.file))));
 }
 
-function selectAutomaticBackupsToKeep(backups, now = new Date()) {
+export function selectAutomaticBackupsToKeep(backups, now = new Date()) {
   const keep = new Set();
   const hourlyTwo = new Map();
   const hourlyOne = new Set();
@@ -824,19 +904,13 @@ function loadPortableState() {
   const data = {
     versions: loadPriceVersions(),
     categories: loadPriceCategories(),
+    materialKinds: loadMaterialKinds(),
     materials: loadMaterials(),
     templates: loadTemplates(),
     packages: loadPackages(),
-    activeVersionId: getAppState("activeVersionId") || "",
-    activePage: getAppState("activePage") || "manager",
-    categoryLibraryCollapsed: getAppState("categoryLibraryCollapsed") !== "false",
     customers: db.prepare("SELECT id, name, contact, phone, address FROM customers ORDER BY rowid").all(),
     quotes: loadQuotes(),
-    activeCustomerId: getAppState("activeCustomerId") || "",
-    activeQuoteId: getAppState("activeQuoteId") || "",
-    activePackageId: getAppState("activePackageId") || "",
-    activePackageEstimateId: getAppState("activePackageEstimateId") || "",
-    activePackageTab: getAppState("activePackageTab") || "description"
+    ...loadPersistedUiState()
   };
 
   return {
@@ -861,6 +935,7 @@ function loadPriceVersions() {
       cost_auxiliary AS costAuxiliary, cost_labor AS costLabor,
       unit_price AS unitPrice, cost_unit_price AS costUnitPrice,
       quantity_formula AS quantityFormula,
+      quantity_round_down AS quantityRoundDown,
       uses_material AS usesMaterial,
       material_category AS materialCategory,
       material_subcategory AS materialSubcategory,
@@ -880,7 +955,7 @@ function loadPriceCategories() {
 function loadMaterials() {
   return db.prepare(`
     SELECT
-      id, sort_order AS sortOrder, name, category, spec, unit,
+      id, sort_order AS sortOrder, name, material_kind_id AS materialKindId, category, spec, unit,
       COALESCE(NULLIF(primary_category, ''), category, '') AS primaryCategory,
       secondary_category AS secondaryCategory,
       cost_unit_price AS costUnitPrice,
@@ -894,6 +969,23 @@ function loadMaterials() {
   `).all();
 }
 
+function loadMaterialKinds() {
+  return db.prepare(`
+    SELECT
+      id,
+      sort_order AS sortOrder,
+      name,
+      primary_category AS primaryCategory,
+      unit,
+      cost_unit_price AS costUnitPrice,
+      quote_unit_price AS quoteUnitPrice,
+      '' AS matchGroup,
+      note
+    FROM material_kinds
+    ORDER BY sort_order, rowid
+  `).all();
+}
+
 function loadTemplates() {
   const templates = db.prepare(`
     SELECT id, name, icon_key AS iconKey, sort_order AS sortOrder, collapsed
@@ -903,7 +995,7 @@ function loadTemplates() {
   const items = db.prepare(`
     SELECT
       id, sort_order AS sortOrder, item_type AS sourceType,
-      item_name AS itemName, material_id AS materialId, material_category AS materialCategory,
+      item_name AS itemName, material_kind_id AS materialKindId, material_id AS materialId, material_category AS materialCategory,
       area, quantity
     FROM project_group_template_items
     WHERE template_id = ?
@@ -925,13 +1017,25 @@ function loadPackages() {
     ORDER BY sort_order, rowid
   `).all();
   const sections = db.prepare(`
-    SELECT id, name, sort_order AS sortOrder
+    SELECT id, name, sort_order AS sortOrder, collapsed
     FROM package_sections
     WHERE package_id = ?
     ORDER BY sort_order, rowid
   `);
   const sectionItems = db.prepare(`
-    SELECT id, name, unit, provider, description, sort_order AS sortOrder
+    SELECT
+      id,
+      source_type AS sourceType,
+      name,
+      item_name AS itemName,
+      material_id AS materialId,
+      material_kind_id AS materialKindId,
+      material_category AS materialCategory,
+      unit,
+      provider,
+      area,
+      description,
+      sort_order AS sortOrder
     FROM package_section_items
     WHERE section_id = ?
     ORDER BY sort_order, rowid
@@ -945,15 +1049,27 @@ function loadPackages() {
     ORDER BY sort_order, rowid
   `);
   const groups = db.prepare(`
-    SELECT id, name, icon_key AS iconKey, area, perimeter, height, collapsed, sort_order AS sortOrder
+    SELECT
+      id,
+      package_section_id AS packageSectionId,
+      name,
+      icon_key AS iconKey,
+      count,
+      area,
+      perimeter,
+      height,
+      collapsed,
+      sort_order AS sortOrder
     FROM package_estimate_groups
     WHERE estimate_id = ?
     ORDER BY sort_order, rowid
   `);
   const estimateItems = db.prepare(`
     SELECT
-      id, group_id AS groupId, sort_order AS sortOrder, item_type AS sourceType,
+      id, group_id AS groupId, package_section_item_id AS packageSectionItemId,
+      sort_order AS sortOrder, item_type AS sourceType,
       labor_item_name AS itemName, material_id AS materialId, material_category AS materialCategory,
+      material_kind_id AS materialKindId,
       area, quantity, included_type AS includedType
     FROM package_estimate_items
     WHERE estimate_id = ?
@@ -997,6 +1113,7 @@ function loadQuotes() {
       id, project_group_id AS spaceId, engineering_name AS engineeringName, labor_item_name AS priceItemName,
       item_type AS sourceType,
       material_id AS materialId,
+      material_kind_id AS materialKindId,
       material_category AS materialCategory,
       area, quantity, material, auxiliary, waste_rate AS wasteRate, labor,
       legacy_unit_price AS legacyUnitPrice, note
@@ -1030,21 +1147,16 @@ function savePortableState(portable) {
       DELETE FROM package_sections;
       DELETE FROM packages;
       DELETE FROM materials;
+      DELETE FROM material_kinds;
       DELETE FROM labor_items;
       DELETE FROM labor_categories;
       DELETE FROM price_versions;
       DELETE FROM app_state;
     `);
-    setAppState("activeVersionId", data.activeVersionId || "");
-    setAppState("activePage", data.activePage || "manager");
-    setAppState("categoryLibraryCollapsed", data.categoryLibraryCollapsed ?? true);
-    setAppState("activeCustomerId", data.activeCustomerId || "");
-    setAppState("activeQuoteId", data.activeQuoteId || "");
-    setAppState("activePackageId", data.activePackageId || "");
-    setAppState("activePackageEstimateId", data.activePackageEstimateId || "");
-    setAppState("activePackageTab", data.activePackageTab === "estimate" ? "estimate" : "description");
+    savePersistedUiState(data);
     insertPriceCategories(categories);
     insertPriceVersions(data.versions, categories);
+    insertMaterialKinds(data.materialKinds || []);
     insertMaterials(data.materials || []);
     insertTemplates(data.templates || []);
     insertPackages(data.packages || []);
@@ -1079,8 +1191,8 @@ function insertPriceVersions(versions, categories) {
     INSERT INTO labor_items (
       id, version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
       cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price, quantity_formula,
-      uses_material, material_category, material_subcategory, default_material_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      quantity_round_down, uses_material, material_category, material_subcategory, default_material_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const uniqueCategories = [];
   const seenCategoryNames = new Set();
@@ -1120,6 +1232,7 @@ function insertPriceVersions(versions, categories) {
         toNumber(item.unitPrice),
         toNumber(item.costUnitPrice),
         item.quantityFormula || DEFAULT_QUANTITY_FORMULA,
+        item.quantityRoundDown ? 1 : 0,
         item.usesMaterial ? 1 : 0,
         String(item.materialCategory || "").trim(),
         String(item.materialSubcategory || "").trim(),
@@ -1132,34 +1245,58 @@ function insertPriceVersions(versions, categories) {
 function insertMaterials(materials) {
   const insertMaterial = db.prepare(`
     INSERT INTO materials (
-      id, sort_order, name, category, primary_category, secondary_category, spec, unit,
+      id, sort_order, name, material_kind_id, category, primary_category, secondary_category, spec, unit,
       cost_unit_price, unit_price, quote_unit_price, conversion_unit, conversion_quantity,
       brand, supplier, pricing_formula, note
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   (materials || []).forEach((material, index) => {
-    const name = String(material?.name || "").trim();
+    const name = normalizedText(material?.name);
     if (!name) return;
-    const primaryCategory = String(material?.primaryCategory || material?.category || "").trim();
+    const primaryCategory = normalizedText(material?.primaryCategory || material?.category);
     const quoteUnitPrice = material?.quoteUnitPrice ?? material?.unitPrice;
     insertMaterial.run(
       material.id || makeId("material"),
-      Number.isFinite(Number(material.sortOrder)) ? Number(material.sortOrder) : index,
+      normalizedSortOrder(material, index),
       name,
+      normalizedText(material?.materialKindId),
       primaryCategory,
       primaryCategory,
-      String(material?.secondaryCategory || "").trim(),
-      String(material?.spec || "").trim(),
-      String(material?.unit || "").trim(),
+      normalizedText(material?.secondaryCategory),
+      normalizedText(material?.spec),
+      normalizedText(material?.unit),
       toNumber(material?.costUnitPrice),
       toNumber(quoteUnitPrice),
       toNumber(quoteUnitPrice),
-      String(material?.conversionUnit || "").trim(),
+      normalizedText(material?.conversionUnit),
       toNumber(material?.conversionQuantity),
-      String(material?.brand || "").trim(),
-      String(material?.supplier || "").trim(),
-      String(material?.pricingFormula || "").trim(),
-      String(material?.note || "").trim()
+      normalizedText(material?.brand),
+      normalizedText(material?.supplier),
+      normalizedText(material?.pricingFormula),
+      normalizedText(material?.note)
+    );
+  });
+}
+
+function insertMaterialKinds(kinds) {
+  const insertKind = db.prepare(`
+    INSERT INTO material_kinds (
+      id, sort_order, name, primary_category, unit, cost_unit_price, quote_unit_price, match_group, note
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  (kinds || []).forEach((kind, index) => {
+    const name = normalizedText(kind?.name);
+    if (!name) return;
+    insertKind.run(
+      kind.id || makeId("material-kind"),
+      normalizedSortOrder(kind, index),
+      name,
+      normalizedText(kind?.primaryCategory || kind?.category),
+      normalizedText(kind?.unit),
+      toNumber(kind?.costUnitPrice),
+      toNumber(kind?.quoteUnitPrice ?? kind?.unitPrice),
+      "",
+      normalizedText(kind?.note)
     );
   });
 }
@@ -1171,31 +1308,32 @@ function insertTemplates(templates) {
   `);
   const insertItem = db.prepare(`
     INSERT INTO project_group_template_items (
-      id, template_id, sort_order, item_type, item_name, material_id, material_category, area, quantity
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, template_id, sort_order, item_type, item_name, material_kind_id, material_id, material_category, area, quantity
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   (templates || []).forEach((template, index) => {
-    const name = String(template?.name || "").trim();
+    const name = normalizedText(template?.name);
     if (!name) return;
     const templateId = template.id || makeId("template");
     insertTemplate.run(
       templateId,
       name,
-      String(template?.iconKey || "").trim(),
-      Number.isFinite(Number(template?.sortOrder)) ? Number(template.sortOrder) : index,
-      template?.collapsed ? 1 : 0
+      normalizedText(template?.iconKey),
+      normalizedSortOrder(template, index),
+      sqliteBoolean(template?.collapsed)
     );
     (template.items || []).forEach((item, itemIndex) => {
       const sourceType = item?.sourceType === "material" ? "material" : "labor";
       insertItem.run(
         item.id || makeId("template-item"),
         templateId,
-        Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : itemIndex,
+        normalizedSortOrder(item, itemIndex),
         sourceType,
-        String(item?.itemName || "").trim(),
-        String(item?.materialId || "").trim(),
-        String(item?.materialCategory || "").trim(),
-        String(item?.area || "").trim(),
+        normalizedText(item?.itemName),
+        normalizedText(item?.materialKindId),
+        normalizedText(item?.materialId),
+        normalizedText(item?.materialCategory),
+        normalizedText(item?.area),
         toNumber(item?.quantity)
       );
     });
@@ -1210,12 +1348,14 @@ function insertPackages(packages) {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSection = db.prepare(`
-    INSERT INTO package_sections (id, package_id, name, sort_order)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO package_sections (id, package_id, name, sort_order, collapsed)
+    VALUES (?, ?, ?, ?, ?)
   `);
   const insertSectionItem = db.prepare(`
-    INSERT INTO package_section_items (id, section_id, sort_order, name, unit, provider, description)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO package_section_items (
+      id, section_id, sort_order, source_type, name, item_name, material_kind_id, material_id,
+      material_category, unit, provider, area, description
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertEstimate = db.prepare(`
     INSERT INTO package_estimates (
@@ -1224,18 +1364,18 @@ function insertPackages(packages) {
   `);
   const insertGroup = db.prepare(`
     INSERT INTO package_estimate_groups (
-      id, estimate_id, name, icon_key, area, perimeter, height, collapsed, sort_order
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, estimate_id, package_section_id, name, icon_key, count, area, perimeter, height, collapsed, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertEstimateItem = db.prepare(`
     INSERT INTO package_estimate_items (
-      id, estimate_id, group_id, sort_order, item_type, labor_item_name, material_id,
+      id, estimate_id, group_id, package_section_item_id, sort_order, item_type, labor_item_name, material_kind_id, material_id,
       material_category, area, quantity, included_type
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   (packages || []).forEach((entry, index) => {
-    const name = String(entry?.name || "").trim();
+    const name = normalizedText(entry?.name);
     if (!name) return;
     const packageId = entry.id || makeId("package");
     insertPackage.run(
@@ -1244,38 +1384,45 @@ function insertPackages(packages) {
       String(entry?.unit || "平米").trim(),
       toNumber(entry?.quoteUnitPrice),
       toNumber(entry?.costTargetRate),
-      String(entry?.quantityFormula || "q=buildingArea").trim(),
-      String(entry?.description || "").trim(),
-      String(entry?.exclusionNote || "").trim(),
-      Number.isFinite(Number(entry?.sortOrder)) ? Number(entry.sortOrder) : index,
-      entry?.collapsed ? 1 : 0
+      normalizedText(entry?.quantityFormula || "q=buildingArea"),
+      normalizedText(entry?.description),
+      normalizedText(entry?.exclusionNote),
+      normalizedSortOrder(entry, index),
+      sqliteBoolean(entry?.collapsed)
     );
 
     (entry.sections || []).forEach((section, sectionIndex) => {
-      const sectionName = String(section?.name || "").trim();
+      const sectionName = normalizedText(section?.name);
       if (!sectionName) return;
       const sectionId = section.id || makeId("package-section");
       insertSection.run(
         sectionId,
         packageId,
         sectionName,
-        Number.isFinite(Number(section?.sortOrder)) ? Number(section.sortOrder) : sectionIndex
+        normalizedSortOrder(section, sectionIndex),
+        sqliteBoolean(section?.collapsed)
       );
       (section.items || []).forEach((item, itemIndex) => {
         insertSectionItem.run(
           item?.id || makeId("package-section-item"),
           sectionId,
-          Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : itemIndex,
-          String(item?.name || "").trim(),
-          String(item?.unit || "").trim(),
-          String(item?.provider || "").trim(),
-          String(item?.description || "").trim()
+          normalizedSortOrder(item, itemIndex),
+          item?.sourceType === "material" ? "material" : "labor",
+          normalizedText(item?.name),
+          normalizedText(item?.itemName || item?.name),
+          normalizedText(item?.materialKindId),
+          normalizedText(item?.materialId),
+          normalizedText(item?.materialCategory),
+          normalizedText(item?.unit),
+          normalizedText(item?.provider || item?.area),
+          normalizedText(item?.area || item?.provider),
+          normalizedText(item?.description)
         );
       });
     });
 
     (entry.estimates || []).forEach((estimate, estimateIndex) => {
-      const estimateName = String(estimate?.name || "").trim();
+      const estimateName = normalizedText(estimate?.name);
       if (!estimateName) return;
       const estimateId = estimate.id || makeId("package-estimate");
       insertEstimate.run(
@@ -1287,20 +1434,22 @@ function insertPackages(packages) {
         toNumber(estimate?.perimeter),
         toNumber(estimate?.height),
         toNumber(estimate?.quoteUnitPrice ?? entry?.quoteUnitPrice),
-        Number.isFinite(Number(estimate?.sortOrder)) ? Number(estimate.sortOrder) : estimateIndex,
-        estimate?.active ? 1 : 0
+        normalizedSortOrder(estimate, estimateIndex),
+        sqliteBoolean(estimate?.active)
       );
       (estimate.groups || []).forEach((group, groupIndex) => {
         insertGroup.run(
           group?.id || makeId("package-group"),
           estimateId,
-          String(group?.name || "测算组合").trim(),
-          String(group?.iconKey || "").trim(),
+          normalizedText(group?.packageSectionId),
+          normalizedText(group?.name || "测算组合"),
+          normalizedText(group?.iconKey),
+          toNumber(group?.count ?? 1),
           toNumber(group?.area),
           toNumber(group?.perimeter),
           toNumber(group?.height),
-          group?.collapsed ? 1 : 0,
-          Number.isFinite(Number(group?.sortOrder)) ? Number(group.sortOrder) : groupIndex
+          sqliteBoolean(group?.collapsed),
+          normalizedSortOrder(group, groupIndex)
         );
       });
       (estimate.items || []).forEach((item, itemIndex) => {
@@ -1308,15 +1457,17 @@ function insertPackages(packages) {
         insertEstimateItem.run(
           item?.id || makeId("package-item"),
           estimateId,
-          String(item?.groupId || "").trim() || null,
-          Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : itemIndex,
+          normalizedText(item?.groupId) || null,
+          normalizedText(item?.packageSectionItemId),
+          normalizedSortOrder(item, itemIndex),
           sourceType,
-          String(item?.itemName || "").trim(),
-          String(item?.materialId || "").trim(),
-          String(item?.materialCategory || "").trim(),
-          String(item?.area || "").trim(),
+          normalizedText(item?.itemName),
+          normalizedText(item?.materialKindId),
+          normalizedText(item?.materialId),
+          normalizedText(item?.materialCategory),
+          normalizedText(item?.area),
           toNumber(item?.quantity),
-          String(item?.includedType || "included").trim()
+          normalizedText(item?.includedType || "included")
         );
       });
     });
@@ -1352,8 +1503,8 @@ function insertQuotes(quotes) {
   const insertLine = db.prepare(`
     INSERT INTO quote_items (
       id, quote_id, project_group_id, sort_order, engineering_name, labor_item_name, item_type, area, quantity,
-      material_id, material_category, material, auxiliary, waste_rate, labor, legacy_unit_price, note
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      material_kind_id, material_id, material_category, material, auxiliary, waste_rate, labor, legacy_unit_price, note
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSpace = db.prepare(`
     INSERT INTO quote_project_groups (
@@ -1365,55 +1516,70 @@ function insertQuotes(quotes) {
       quote.id,
       quote.customerId,
       quote.name || quote.projectName || "未命名报价",
-      quote.projectName || "",
-      quote.clientName || "",
-      quote.clientPhone || "",
-      quote.clientAddress || "",
-      quote.quoteDate || "",
-      quote.priceVersionId || "",
+      normalizedText(quote.projectName),
+      normalizedText(quote.clientName),
+      normalizedText(quote.clientPhone),
+      normalizedText(quote.clientAddress),
+      normalizedText(quote.quoteDate),
+      normalizedText(quote.priceVersionId),
       toNumber(quote.managementRate),
       toNumber(quote.designRate),
       toNumber(quote.taxRate),
-      quote.showAmountColumns === false ? 0 : 1
+      sqliteBoolean(quote.showAmountColumns !== false)
     );
     (quote.spaces || []).forEach((space, index) => {
       insertSpace.run(
         space.id,
         quote.id,
-        Number.isFinite(Number(space.sortOrder)) ? Number(space.sortOrder) : index,
+        normalizedSortOrder(space, index),
         space.name || "全屋",
         space.type === "overall" ? "overall" : "space",
         space.workType === "material" ? "material" : "labor",
-        String(space.iconKey || "").trim(),
-        String(space.templateId || "").trim(),
+        normalizedText(space.iconKey),
+        normalizedText(space.templateId),
         toNumber(space.area),
         toNumber(space.perimeter),
         toNumber(space.height),
         toNumber(space.buildingArea),
-        space.collapsed ? 1 : 0
+        sqliteBoolean(space.collapsed)
       );
     });
     (quote.lines || []).forEach((line, index) => {
       insertLine.run(
         line.id,
         quote.id,
-        line.spaceId || null,
+        normalizedText(line.spaceId) || null,
         index,
-        line.engineeringName || line.itemName || line.priceItemName || "",
-        line.priceItemName || line.itemName || "",
+        normalizedText(line.engineeringName || line.itemName || line.priceItemName),
+        normalizedText(line.priceItemName || line.itemName),
         line.sourceType === "material" || line.materialId ? "material" : "labor",
-        line.area || "",
+        normalizedText(line.area),
         toNumber(line.quantity),
-        line.materialId || "",
-        line.materialCategory || "",
+        normalizedText(line.materialKindId),
+        normalizedText(line.materialId),
+        normalizedText(line.materialCategory),
         toNumber(line.material),
         toNumber(line.auxiliary),
         toNumber(line.wasteRate),
         toNumber(line.labor),
         line.legacyUnitPrice ?? line.customPrice ?? null,
-        line.note || ""
+        normalizedText(line.note)
       );
     });
+  });
+}
+
+function loadPersistedUiState() {
+  return Object.fromEntries(APP_STATE_FIELDS.map(([key, defaultValue, loadValue]) => {
+    const value = getAppState(key);
+    return [key, loadValue ? loadValue(value) : (value || defaultValue)];
+  }));
+}
+
+function savePersistedUiState(data) {
+  APP_STATE_FIELDS.forEach(([key, defaultValue, , saveValue]) => {
+    const value = Object.prototype.hasOwnProperty.call(data, key) ? data[key] : defaultValue;
+    setAppState(key, saveValue ? saveValue(value) : value);
   });
 }
 
@@ -1477,6 +1643,18 @@ function sendText(res, status, text) {
 function toNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function normalizedText(value, fallback = "") {
+  return String(value ?? fallback).trim();
+}
+
+function normalizedSortOrder(item, index) {
+  return Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index;
+}
+
+function sqliteBoolean(value) {
+  return value ? 1 : 0;
 }
 
 function makeId(prefix) {

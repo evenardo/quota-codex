@@ -41,7 +41,7 @@ data/backups/quote-data-auto-年月日时分秒毫秒.sqlite
 
 ```powershell
 $env:BACKUP_INTERVAL_MINUTES="10"
-pnpm dev
+npm run dev
 ```
 
 备份使用 SQLite 的 `VACUUM INTO` 生成一致的 `.sqlite` 文件，比直接复制数据库文件更稳。
@@ -50,7 +50,7 @@ pnpm dev
 
 ```powershell
 cd "D:\onedrive\Desktop\codex测试目录\quote-node-service"
-pnpm dev
+npm run dev
 ```
 
 然后打开：
@@ -60,3 +60,13 @@ http://127.0.0.1:5177
 ```
 
 如果端口提示被占用，说明服务已经在运行，直接打开上面的地址即可。
+
+## 测试
+
+日常检查直接运行：
+
+```powershell
+npm test
+```
+
+它会依次执行前台测试、后台测试、语法检查和 smoke test。
