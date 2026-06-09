@@ -84,6 +84,7 @@ function portableState(overrides = {}) {
           unit: "平米",
           category: "测试分类",
           description: "测试说明",
+          aliases: ["测试别名/平米"],
           auxiliary: 2,
           labor: 3,
           costAuxiliary: 1,
@@ -92,13 +93,30 @@ function portableState(overrides = {}) {
         }]
       }],
       categories: [{ id: "category-test", name: "测试分类", description: "分类说明", sortOrder: 0 }],
+      materialKinds: [{
+        id: "material-kind-tile",
+        name: "墙砖",
+        primaryCategory: "砖",
+        unit: "平米",
+        costUnitPrice: 56.25,
+        quoteUnitPrice: 68.75,
+        calcCostArea: 0.32,
+        calcCostPrice: 18,
+        calcQuoteArea: 0.32,
+        calcQuotePrice: 22
+      }],
       materials: [{
         id: "material-test",
         name: "测试主材",
+        materialKindId: "material-kind-tile",
         primaryCategory: "砖",
         unit: "块",
         quoteUnitPrice: 45,
-        costUnitPrice: 42
+        costUnitPrice: 42,
+        calcCostArea: 0.32,
+        calcCostPrice: 15,
+        calcQuoteArea: 0.32,
+        calcQuotePrice: 20
       }],
       templates: [],
       packages: [],
@@ -219,6 +237,7 @@ function inspectSqliteDatabase(dataDir) {
       "price_versions",
       "labor_categories",
       "labor_items",
+      "material_kinds",
       "materials",
       "project_group_templates",
       "project_group_template_items",
@@ -241,10 +260,31 @@ function inspectSqliteDatabase(dataDir) {
     const quote = db.prepare("SELECT project_name AS projectName, show_amount_columns AS showAmountColumns FROM quotes WHERE id = ?").get("quote-test");
     const group = db.prepare("SELECT name, area, perimeter, height FROM quote_project_groups WHERE id = ?").get("group-test");
     const line = db.prepare("SELECT engineering_name AS engineeringName, item_type AS sourceType, quantity, auxiliary, labor FROM quote_items WHERE id = ?").get("line-test");
-    const laborItem = db.prepare("SELECT name, unit, category_id AS categoryId, quantity_formula AS quantityFormula FROM labor_items WHERE id = ?").get("labor-test");
-    const material = db.prepare("SELECT name, primary_category AS primaryCategory, quote_unit_price AS quoteUnitPrice FROM materials WHERE id = ?").get("material-test");
+    const laborItem = db.prepare("SELECT name, unit, aliases, category_id AS categoryId, quantity_formula AS quantityFormula FROM labor_items WHERE id = ?").get("labor-test");
+    const materialKind = db.prepare(`
+      SELECT
+        name,
+        calc_cost_area AS calcCostArea,
+        calc_cost_price AS calcCostPrice,
+        calc_quote_area AS calcQuoteArea,
+        calc_quote_price AS calcQuotePrice
+      FROM material_kinds
+      WHERE id = ?
+    `).get("material-kind-tile");
+    const material = db.prepare(`
+      SELECT
+        name,
+        primary_category AS primaryCategory,
+        quote_unit_price AS quoteUnitPrice,
+        calc_cost_area AS calcCostArea,
+        calc_cost_price AS calcCostPrice,
+        calc_quote_area AS calcQuoteArea,
+        calc_quote_price AS calcQuotePrice
+      FROM materials
+      WHERE id = ?
+    `).get("material-test");
     const packageSection = db.prepare("SELECT name, collapsed FROM package_sections WHERE id = ?").get("package-section-test");
-    return { counts, appStateRows, quote, group, line, laborItem, material, packageSection };
+    return { counts, appStateRows, quote, group, line, laborItem, materialKind, material, packageSection };
   } finally {
     db.close();
   }
@@ -308,9 +348,18 @@ test("backend API uses an isolated SQLite database", async (t) => {
   assert.equal(dataResponse.status, 200);
   const payload = await dataResponse.json();
   assert.equal(payload.data.versions[0].name, "测试工费版本");
+  assert.deepEqual(JSON.parse(payload.data.versions[0].items[0].aliases), ["测试别名/平米"]);
   assert.equal(payload.data.quotes[0].projectName, "测试工程");
   assert.equal(payload.data.quotes[0].lines[0].area, "墙面");
+  assert.equal(payload.data.materialKinds[0].calcCostArea, 0.32);
+  assert.equal(payload.data.materialKinds[0].calcCostPrice, 18);
+  assert.equal(payload.data.materialKinds[0].calcQuoteArea, 0.32);
+  assert.equal(payload.data.materialKinds[0].calcQuotePrice, 22);
   assert.equal(payload.data.materials[0].quoteUnitPrice, 45);
+  assert.equal(payload.data.materials[0].calcCostArea, 0.32);
+  assert.equal(payload.data.materials[0].calcCostPrice, 15);
+  assert.equal(payload.data.materials[0].calcQuoteArea, 0.32);
+  assert.equal(payload.data.materials[0].calcQuotePrice, 20);
   assert.equal(payload.data.templates[0].name, "template test");
   assert.equal(payload.data.templates[0].items[1].sourceType, "material");
   assert.equal(payload.data.packages[0].sections[0].collapsed, 1);
@@ -327,10 +376,20 @@ test("backend API uses an isolated SQLite database", async (t) => {
   assert.equal(inspected.counts.price_versions, 1);
   assert.equal(inspected.counts.labor_categories, 1);
   assert.equal(inspected.counts.labor_items, 1);
+  assert.equal(inspected.counts.material_kinds, 1);
   assert.equal(inspected.counts.materials, 1);
   assert.equal(inspected.counts.project_group_templates, 1);
   assert.equal(inspected.counts.project_group_template_items, 2);
   assert.equal(inspected.counts.packages, 1);
+  assert.equal(inspected.materialKind.name, "墙砖");
+  assert.equal(inspected.materialKind.calcCostArea, 0.32);
+  assert.equal(inspected.materialKind.calcCostPrice, 18);
+  assert.equal(inspected.materialKind.calcQuoteArea, 0.32);
+  assert.equal(inspected.materialKind.calcQuotePrice, 22);
+  assert.equal(inspected.material.calcCostArea, 0.32);
+  assert.equal(inspected.material.calcCostPrice, 15);
+  assert.equal(inspected.material.calcQuoteArea, 0.32);
+  assert.equal(inspected.material.calcQuotePrice, 20);
   assert.equal(inspected.counts.package_sections, 1);
   assert.equal(inspected.counts.package_section_items, 1);
   assert.equal(inspected.counts.package_estimates, 1);
@@ -352,6 +411,7 @@ test("backend API uses an isolated SQLite database", async (t) => {
   assert.equal(inspected.laborItem.name, "测试工费/平米");
   assert.equal(inspected.laborItem.unit, "平米");
   assert.equal(inspected.laborItem.quantityFormula, "q=s");
+  assert.deepEqual(JSON.parse(inspected.laborItem.aliases), ["测试别名/平米"]);
   assert.equal(inspected.material.name, "测试主材");
   assert.equal(inspected.material.primaryCategory, "砖");
   assert.equal(inspected.material.quoteUnitPrice, 45);

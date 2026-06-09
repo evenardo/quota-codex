@@ -18,6 +18,8 @@ const APP_STATE_FIELDS = [
   ["activeVersionId", ""],
   ["activePage", "manager"],
   ["categoryLibraryCollapsed", true, (value) => value !== "false"],
+  ["genericMaterialLibraryCollapsed", true, (value) => value !== "false"],
+  ["supplierMaterialLibraryCollapsed", false, (value) => value === "true"],
   ["activeCustomerId", ""],
   ["activeQuoteId", ""],
   ["activePackageId", ""],
@@ -118,6 +120,8 @@ function initializeDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 0,
       name TEXT NOT NULL,
       unit TEXT,
+      family TEXT,
+      aliases TEXT,
       category TEXT,
       category_id TEXT,
       description TEXT,
@@ -151,6 +155,10 @@ function initializeDatabase() {
       quote_unit_price REAL DEFAULT 0,
       conversion_unit TEXT,
       conversion_quantity REAL DEFAULT 0,
+      calc_cost_area REAL DEFAULT 0,
+      calc_cost_price REAL DEFAULT 0,
+      calc_quote_area REAL DEFAULT 0,
+      calc_quote_price REAL DEFAULT 0,
       brand TEXT,
       supplier TEXT,
       pricing_formula TEXT,
@@ -164,6 +172,10 @@ function initializeDatabase() {
       unit TEXT,
       cost_unit_price REAL DEFAULT 0,
       quote_unit_price REAL DEFAULT 0,
+      calc_cost_area REAL DEFAULT 0,
+      calc_cost_price REAL DEFAULT 0,
+      calc_quote_area REAL DEFAULT 0,
+      calc_quote_price REAL DEFAULT 0,
       match_group TEXT,
       note TEXT
     );
@@ -172,7 +184,8 @@ function initializeDatabase() {
       name TEXT NOT NULL,
       icon_key TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
-      collapsed INTEGER DEFAULT 0
+      collapsed INTEGER DEFAULT 0,
+      library_order_applied INTEGER DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS project_group_template_items (
       id TEXT PRIMARY KEY,
@@ -350,6 +363,7 @@ function initializeDatabase() {
   ensureColumn("quote_project_groups", "building_area", "REAL DEFAULT 0");
   ensureColumn("quote_project_groups", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("project_group_templates", "collapsed", "INTEGER DEFAULT 0");
+  ensureColumn("project_group_templates", "library_order_applied", "INTEGER DEFAULT 1");
   ensureColumn("packages", "quantity_formula", "TEXT");
   ensureColumn("packages", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("packages", "exclusion_note", "TEXT");
@@ -364,6 +378,8 @@ function initializeDatabase() {
   ensureColumn("package_estimate_groups", "count", "REAL DEFAULT 1");
   ensureColumn("package_estimate_items", "package_section_item_id", "TEXT");
   ensureColumn("labor_items", "sort_order", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("labor_items", "family", "TEXT");
+  ensureColumn("labor_items", "aliases", "TEXT");
   ensureColumn("labor_items", "category_id", "TEXT");
   ensureColumn("labor_items", "quantity_formula", "TEXT");
   ensureColumn("labor_items", "quantity_round_down", "INTEGER DEFAULT 0");
@@ -385,12 +401,20 @@ function initializeDatabase() {
   ensureColumn("materials", "quote_unit_price", "REAL DEFAULT 0");
   ensureColumn("materials", "conversion_unit", "TEXT");
   ensureColumn("materials", "conversion_quantity", "REAL DEFAULT 0");
+  ensureColumn("materials", "calc_cost_area", "REAL DEFAULT 0");
+  ensureColumn("materials", "calc_cost_price", "REAL DEFAULT 0");
+  ensureColumn("materials", "calc_quote_area", "REAL DEFAULT 0");
+  ensureColumn("materials", "calc_quote_price", "REAL DEFAULT 0");
   ensureColumn("materials", "brand", "TEXT");
   ensureColumn("materials", "supplier", "TEXT");
   ensureColumn("materials", "pricing_formula", "TEXT");
   ensureColumn("materials", "note", "TEXT");
   ensureColumn("material_kinds", "cost_unit_price", "REAL DEFAULT 0");
   ensureColumn("material_kinds", "quote_unit_price", "REAL DEFAULT 0");
+  ensureColumn("material_kinds", "calc_cost_area", "REAL DEFAULT 0");
+  ensureColumn("material_kinds", "calc_cost_price", "REAL DEFAULT 0");
+  ensureColumn("material_kinds", "calc_quote_area", "REAL DEFAULT 0");
+  ensureColumn("material_kinds", "calc_quote_price", "REAL DEFAULT 0");
   ensureColumn("quote_items", "material_id", "TEXT");
   ensureColumn("quote_items", "material_kind_id", "TEXT");
   ensureColumn("project_group_template_items", "material_kind_id", "TEXT");
@@ -927,7 +951,7 @@ function loadPriceVersions() {
     SELECT
       labor_items.id,
       labor_items.sort_order AS sortOrder,
-      labor_items.name, unit, material, waste_rate AS wasteRate, auxiliary, labor,
+      labor_items.name, unit, family, aliases, material, waste_rate AS wasteRate, auxiliary, labor,
       labor_items.category_id AS categoryId,
       COALESCE(labor_categories.name, labor_items.category, '') AS category,
       labor_items.description AS description,
@@ -963,6 +987,10 @@ function loadMaterials() {
       unit_price AS unitPrice,
       conversion_unit AS conversionUnit,
       conversion_quantity AS conversionQuantity,
+      calc_cost_area AS calcCostArea,
+      calc_cost_price AS calcCostPrice,
+      calc_quote_area AS calcQuoteArea,
+      calc_quote_price AS calcQuotePrice,
       brand, supplier, pricing_formula AS pricingFormula, note
     FROM materials
     ORDER BY sort_order, rowid
@@ -979,6 +1007,10 @@ function loadMaterialKinds() {
       unit,
       cost_unit_price AS costUnitPrice,
       quote_unit_price AS quoteUnitPrice,
+      calc_cost_area AS calcCostArea,
+      calc_cost_price AS calcCostPrice,
+      calc_quote_area AS calcQuoteArea,
+      calc_quote_price AS calcQuotePrice,
       '' AS matchGroup,
       note
     FROM material_kinds
@@ -988,7 +1020,7 @@ function loadMaterialKinds() {
 
 function loadTemplates() {
   const templates = db.prepare(`
-    SELECT id, name, icon_key AS iconKey, sort_order AS sortOrder, collapsed
+    SELECT id, name, icon_key AS iconKey, sort_order AS sortOrder, collapsed, library_order_applied AS libraryOrderApplied
     FROM project_group_templates
     ORDER BY sort_order, rowid
   `).all();
@@ -1189,10 +1221,10 @@ function insertPriceVersions(versions, categories) {
   const insertVersion = db.prepare("INSERT INTO price_versions (id, name, created_at) VALUES (?, ?, ?)");
   const insertItem = db.prepare(`
     INSERT INTO labor_items (
-      id, version_id, sort_order, name, unit, category, category_id, description, material, auxiliary, waste_rate, labor,
+      id, version_id, sort_order, name, unit, family, aliases, category, category_id, description, material, auxiliary, waste_rate, labor,
       cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price, quantity_formula,
       quantity_round_down, uses_material, material_category, material_subcategory, default_material_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const uniqueCategories = [];
   const seenCategoryNames = new Set();
@@ -1218,6 +1250,8 @@ function insertPriceVersions(versions, categories) {
         Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index,
         item.name || "",
         item.unit || "",
+        normalizedText(item.family),
+        JSON.stringify(Array.isArray(item.aliases) ? item.aliases : []),
         categoryName || categoryById.get(categoryId) || "",
         categoryId,
         item.description || "",
@@ -1247,8 +1281,9 @@ function insertMaterials(materials) {
     INSERT INTO materials (
       id, sort_order, name, material_kind_id, category, primary_category, secondary_category, spec, unit,
       cost_unit_price, unit_price, quote_unit_price, conversion_unit, conversion_quantity,
+      calc_cost_area, calc_cost_price, calc_quote_area, calc_quote_price,
       brand, supplier, pricing_formula, note
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   (materials || []).forEach((material, index) => {
     const name = normalizedText(material?.name);
@@ -1270,6 +1305,10 @@ function insertMaterials(materials) {
       toNumber(quoteUnitPrice),
       normalizedText(material?.conversionUnit),
       toNumber(material?.conversionQuantity),
+      toNumber(material?.calcCostArea),
+      toNumber(material?.calcCostPrice),
+      toNumber(material?.calcQuoteArea),
+      toNumber(material?.calcQuotePrice),
       normalizedText(material?.brand),
       normalizedText(material?.supplier),
       normalizedText(material?.pricingFormula),
@@ -1281,8 +1320,9 @@ function insertMaterials(materials) {
 function insertMaterialKinds(kinds) {
   const insertKind = db.prepare(`
     INSERT INTO material_kinds (
-      id, sort_order, name, primary_category, unit, cost_unit_price, quote_unit_price, match_group, note
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, sort_order, name, primary_category, unit, cost_unit_price, quote_unit_price,
+      calc_cost_area, calc_cost_price, calc_quote_area, calc_quote_price, match_group, note
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   (kinds || []).forEach((kind, index) => {
     const name = normalizedText(kind?.name);
@@ -1295,6 +1335,10 @@ function insertMaterialKinds(kinds) {
       normalizedText(kind?.unit),
       toNumber(kind?.costUnitPrice),
       toNumber(kind?.quoteUnitPrice ?? kind?.unitPrice),
+      toNumber(kind?.calcCostArea),
+      toNumber(kind?.calcCostPrice),
+      toNumber(kind?.calcQuoteArea),
+      toNumber(kind?.calcQuotePrice),
       "",
       normalizedText(kind?.note)
     );
@@ -1303,8 +1347,8 @@ function insertMaterialKinds(kinds) {
 
 function insertTemplates(templates) {
   const insertTemplate = db.prepare(`
-    INSERT INTO project_group_templates (id, name, icon_key, sort_order, collapsed)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO project_group_templates (id, name, icon_key, sort_order, collapsed, library_order_applied)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   const insertItem = db.prepare(`
     INSERT INTO project_group_template_items (
@@ -1320,7 +1364,8 @@ function insertTemplates(templates) {
       name,
       normalizedText(template?.iconKey),
       normalizedSortOrder(template, index),
-      sqliteBoolean(template?.collapsed)
+      sqliteBoolean(template?.collapsed),
+      sqliteBoolean(template?.libraryOrderApplied !== false)
     );
     (template.items || []).forEach((item, itemIndex) => {
       const sourceType = item?.sourceType === "material" ? "material" : "labor";

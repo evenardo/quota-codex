@@ -175,8 +175,29 @@ test("normalizes labor items, materials, categories, and package estimates", () 
 
   const categories = app.normalizeCategories(getFrontendState(app).categories);
   const laborItem = app.normalizeLaborItem({ name: "paint/m2", category: "Cat B", auxiliary: "2", labor: "3" }, 4);
-  const genericMaterials = app.normalizeGenericMaterials([{ id: "kind-floor", name: "地砖", primaryCategory: "砖", unit: "平米", sortOrder: 0 }]);
-  const material = app.normalizeMaterial({ id: "mat-x", name: "tile", materialKindId: "kind-floor", category: "Tile", unitPrice: "88", costUnitPrice: "66" }, 5);
+  const genericMaterials = app.normalizeGenericMaterials([{
+    id: "kind-floor",
+    name: "地砖",
+    primaryCategory: "砖",
+    unit: "平米",
+    calcCostArea: "0.32",
+    calcCostPrice: "18",
+    calcQuoteArea: "0.32",
+    calcQuotePrice: "22",
+    sortOrder: 0
+  }]);
+  const material = app.normalizeMaterial({
+    id: "mat-x",
+    name: "tile",
+    materialKindId: "kind-floor",
+    category: "Tile",
+    unitPrice: "88",
+    costUnitPrice: "66",
+    calcCostArea: "0.32",
+    calcCostPrice: "15",
+    calcQuoteArea: "0.32",
+    calcQuotePrice: "20"
+  }, 5);
   const estimate = app.normalizePackageEstimate({ groups: [], items: [{ sourceType: "bad", includedType: "bad" }] }, 0);
 
   assert.deepEqual(plain(categories.map((category) => category.name)), ["Cat B", "Cat A"]);
@@ -185,11 +206,20 @@ test("normalizes labor items, materials, categories, and package estimates", () 
   assert.equal(laborItem.quantityFormula, "q=s+c*(h-0.25)");
   assert.equal(app.normalizePackageSection({ name: "Collapsed", collapsed: 1 }, 0).collapsed, true);
   assert.equal(genericMaterials.some((kind) => kind.name === "墙砖"), true);
+  assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcCostArea, 0.32);
+  assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcCostPrice, 18);
+  assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcQuoteArea, 0.32);
+  assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcQuotePrice, 22);
+  assert.equal(app.calculateGenericMaterialUnitPrice(0.32, 18), 56.25);
   assert.equal(material.materialKindId, "kind-floor");
   assert.equal(material.primaryCategory, "Tile");
   assert.equal(material.quoteUnitPrice, 88);
   assert.equal(material.unitPrice, 88);
   assert.equal(material.costUnitPrice, 66);
+  assert.equal(material.calcCostArea, 0.32);
+  assert.equal(material.calcCostPrice, 15);
+  assert.equal(material.calcQuoteArea, 0.32);
+  assert.equal(material.calcQuotePrice, 20);
   assert.equal(estimate.buildingArea, 143);
   assert.equal(estimate.height, 2.7);
   assert.equal(estimate.groups.length, 1);
@@ -296,6 +326,42 @@ test("syncs quote items when a labor item unit changes and blocks duplicates", (
   assert.equal(state.quotes[0].lines[0].priceItemName, "paint/roll");
   assert.equal(state.expandedLaborItemName, "paint/roll");
   assert.equal(state.pendingLaborItemName, "paint/roll");
+});
+
+test("keeps labor item name unchanged until slash unit input is valid", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.versions = [{
+      id: "version-a",
+      items: [{ name: "paint/m2", unit: "m2", sortOrder: 0 }]
+    }];
+    state.activeVersionId = "version-a";
+    state.quotes = [{
+      id: "quote-a",
+      lines: [{ id: "line-a", priceItemName: "paint/m2", engineeringName: "paint/m2" }]
+    }];
+    state.expandedLaborItemName = "paint/m2";
+    state.pendingLaborItemName = "paint/m2";
+  `);
+  const state = getFrontendState(app);
+  const item = state.versions[0].items[0];
+  const classes = new Set();
+  const inputNode = { classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name) } };
+  const unitNode = { textContent: "" };
+  const rowNode = { dataset: { itemName: "paint/m2" }, querySelector: () => unitNode };
+
+  assert.equal(app.updateLaborItemNameFromInput(item, "paint roll", inputNode, rowNode), false);
+  assert.equal(item.name, "paint/m2");
+  assert.equal(state.quotes[0].lines[0].priceItemName, "paint/m2");
+  assert.equal(classes.has("invalid"), true);
+
+  assert.equal(app.updateLaborItemNameFromInput(item, "paint/roll", inputNode, rowNode), true);
+  assert.equal(item.name, "paint/roll");
+  assert.equal(item.unit, "roll");
+  assert.equal(state.quotes[0].lines[0].priceItemName, "paint/roll");
+  assert.equal(rowNode.dataset.itemName, "paint/roll");
+  assert.equal(unitNode.textContent, "roll");
+  assert.equal(classes.has("invalid"), false);
 });
 
 test("syncs labor item renames across linked quote, template, and package entries", () => {
@@ -486,9 +552,67 @@ test("finds comparable labor and material entries by useful ranking signals", ()
   const materialMatches = app.findSimilarMaterials("Marco 800");
   const categoryMatches = app.materialsForCategory("tile");
 
-  assert.deepEqual(plain(laborMatches.map((item) => item.name)), ["paint/m", "wall paint/m2"]);
+  assert.deepEqual(plain(laborMatches.map((match) => match.item.name)), ["paint/m", "wall paint/m2"]);
   assert.equal(materialMatches[0].id, "mat-a");
   assert.deepEqual(plain(categoryMatches.map((item) => item.id)), ["mat-a"]);
+});
+
+test("labor aliases search as display names while keeping the base labor item link", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.categories = [{ id: "cat-a", name: "Base", sortOrder: 0 }];
+    state.versions = [{
+      id: "version-a",
+      items: [{
+        name: "石膏板吊顶/米",
+        unit: "米",
+        aliases: ["石膏板直线吊顶/米", "轻钢龙骨石膏板直线吊顶/米"],
+        categoryId: "cat-a",
+        category: "Base",
+        auxiliary: 6,
+        labor: 14,
+        sortOrder: 0
+      }]
+    }];
+    state.activeVersionId = "version-a";
+    saveState = () => {};
+    renderLines = () => {};
+    renderTotalsAndPreview = () => {};
+    recommendedQuantityForQuoteItem = () => null;
+  `);
+
+  const matches = app.findSimilarItems("轻钢龙骨");
+  assert.equal(matches[0].item.name, "石膏板吊顶/米");
+  assert.equal(matches[0].alias, "轻钢龙骨石膏板直线吊顶/米");
+
+  const line = {};
+  app.selectSuggestedItem("石膏板吊顶/米", line, matches[0].alias);
+
+  assert.equal(line.priceItemName, "石膏板吊顶/米");
+  assert.equal(line.engineeringName, "轻钢龙骨石膏板直线吊顶/米");
+  assert.equal(line.auxiliary, 6);
+  assert.equal(line.labor, 14);
+});
+
+test("renders labor aliases as readonly child rows under their base item", () => {
+  const app = loadFrontend();
+  const html = app.renderLaborAliasRows({
+    name: "石膏板吊顶/米",
+    unit: "米",
+    aliases: ["石膏板直线吊顶/米"],
+    auxiliary: 6,
+    labor: 14,
+    costAuxiliary: 2,
+    costLabor: 8
+  });
+
+  assert.match(html, /price-alias-row/);
+  assert.match(html, /data-parent-item-name="石膏板吊顶\/米"/);
+  assert.match(html, /price-alias-name-input/);
+  assert.match(html, /石膏板直线吊顶\/米/);
+  assert.match(html, /别名/);
+  assert.match(html, /20\.00/);
+  assert.match(html, /10\.00/);
 });
 
 test("keyboard navigation moves through suggestions and enter picks active option", () => {
@@ -656,12 +780,16 @@ test("reorders package sections and renumbers sortOrder", () => {
   assert.equal(getFrontendState(app).renderedPackages, true);
 });
 
-test("deletes packages only after exact name confirmation", () => {
+test("deletes packages only after simple in-page confirmation", () => {
   const app = loadFrontend();
   setFrontendState(app, `
     saveState = (message) => { state.lastSaveMessage = message; };
     renderAll = () => { state.renderedAll = true; };
-    alert = (message) => { state.lastAlert = message; };
+    confirmSimpleDelete = (name, onConfirm, options = {}) => {
+      state.confirmName = name;
+      state.confirmMessage = options.message || "";
+      state.confirmDelete = onConfirm;
+    };
     state.packages = [
       { id: "pkg-a", name: "Package A", sortOrder: 0, estimates: [{ id: "estimate-a", active: true }] },
       { id: "pkg-b", name: "Package B", sortOrder: 1, estimates: [{ id: "estimate-b", active: true }] }
@@ -671,17 +799,11 @@ test("deletes packages only after exact name confirmation", () => {
     state.returnToPackageId = "pkg-a";
   `);
 
-  setFrontendState(app, "prompt = () => null;");
   app.deletePackage(getFrontendState(app).packages[0]);
   assert.deepEqual(plain(getFrontendState(app).packages.map((entry) => entry.id)), ["pkg-a", "pkg-b"]);
-
-  setFrontendState(app, "prompt = () => 'wrong name';");
-  app.deletePackage(getFrontendState(app).packages[0]);
-  assert.deepEqual(plain(getFrontendState(app).packages.map((entry) => entry.id)), ["pkg-a", "pkg-b"]);
-  assert.equal(getFrontendState(app).lastAlert, "\u5957\u9910\u540d\u79f0\u4e0d\u4e00\u81f4\uff0c\u5df2\u53d6\u6d88\u5220\u9664\u3002");
-
-  setFrontendState(app, "prompt = () => 'Package A';");
-  app.deletePackage(getFrontendState(app).packages[0]);
+  assert.equal(getFrontendState(app).confirmName, "Package A");
+  assert.match(getFrontendState(app).confirmMessage, /\u6210\u672c\u6d4b\u7b97/);
+  setFrontendState(app, "state.confirmDelete();");
   const state = getFrontendState(app);
   assert.deepEqual(plain(state.packages.map((entry) => entry.id)), ["pkg-b"]);
   assert.equal(state.packages[0].sortOrder, 0);
@@ -692,7 +814,7 @@ test("deletes packages only after exact name confirmation", () => {
   assert.equal(state.renderedAll, true);
 });
 
-test("keeps template editing order separate from library sorted order", () => {
+test("sorts template editing items with the same library order used by quotes", () => {
   const app = loadFrontend();
   setFrontendState(app, `
     state.categories = [{ id: "cat-a", name: "A", sortOrder: 0 }, { id: "cat-b", name: "B", sortOrder: 1 }];
@@ -717,8 +839,39 @@ test("keeps template editing order separate from library sorted order", () => {
     ]
   };
 
-  assert.deepEqual(app.templateItemsForEditing(template).map((item) => item.id), ["2", "1", "0"]);
+  assert.deepEqual(app.templateItemsForEditing(template).map((item) => item.id), ["0", "1", "2"]);
   assert.deepEqual(app.sortedTemplateItems(template).map((item) => item.id), ["0", "1", "2"]);
+});
+
+test("keeps newly edited template order until reload applies library order", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.categories = [{ id: "cat-a", name: "A", sortOrder: 0 }, { id: "cat-b", name: "B", sortOrder: 1 }];
+    state.versions = [{
+      id: "version-test",
+      items: [
+        { name: "labor-a/m2", categoryId: "cat-a", sortOrder: 0 },
+        { name: "labor-b/m2", categoryId: "cat-b", sortOrder: 1 }
+      ]
+    }];
+    state.activeVersionId = "version-test";
+  `);
+  const template = {
+    libraryOrderApplied: false,
+    items: [
+      { id: "2", sourceType: "labor", itemName: "labor-b/m2", sortOrder: 0 },
+      { id: "1", sourceType: "labor", itemName: "", sortOrder: 1 },
+      { id: "0", sourceType: "labor", itemName: "labor-a/m2", sortOrder: 2 }
+    ]
+  };
+
+  assert.deepEqual(app.templateItemsForEditing(template).map((item) => item.id), ["2", "1", "0"]);
+
+  const normalized = app.normalizeTemplate(template);
+
+  assert.equal(normalized.libraryOrderApplied, true);
+  assert.deepEqual(normalized.items.map((item) => item.id), ["0", "2", "1"]);
+  assert.deepEqual(normalized.items.map((item) => item.sortOrder), [0, 1, 2]);
 });
 
 test("template sync keys allow same material kind in different areas", () => {
@@ -814,4 +967,25 @@ test("formats and escapes suggestion option html", () => {
   assert.match(laborHtml, /12\.00/);
   assert.match(materialHtml, /&lt;800&gt;/);
   assert.match(materialHtml, /42\.00/);
+});
+
+test("simple delete confirmation blocks template item deletion when cancelled", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    confirm = () => false;
+    saveState = () => { state.saved = true; };
+    renderTemplates = () => { state.renderedTemplates = true; };
+  `);
+  const template = {
+    items: [
+      { id: "item-a", sortOrder: 0 },
+      { id: "item-b", sortOrder: 1 }
+    ]
+  };
+
+  app.deleteTemplateItem(template, "item-a");
+
+  assert.deepEqual(template.items.map((item) => item.id), ["item-a", "item-b"]);
+  assert.equal(getFrontendState(app).saved, undefined);
+  assert.equal(getFrontendState(app).renderedTemplates, undefined);
 });
