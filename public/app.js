@@ -1,4 +1,14 @@
-﻿const STORAGE_KEY = "quote-tool-state-v2";
+﻿/**
+ * @typedef {import("./types.js").LaborItem} LaborItem
+ * @typedef {import("./types.js").MaterialKind} MaterialKind
+ * @typedef {import("./types.js").Material} Material
+ * @typedef {import("./types.js").ProjectGroup} ProjectGroup
+ * @typedef {import("./types.js").QuoteItem} QuoteItem
+ * @typedef {import("./types.js").Quote} Quote
+ * @typedef {import("./types.js").QuoteTotals} QuoteTotals
+ */
+
+const STORAGE_KEY = "quote-tool-state-v2";
 const OLD_STORAGE_KEY = "quote-tool-state-v1";
 const DEFAULT_MANAGEMENT_RATE = 8;
 const DEFAULT_DESIGN_RATE = 6;
@@ -73,8 +83,6 @@ const state = {
 };
 
 const els = {};
-let dataFileHandle = null;
-let tauriReady = false;
 let serverSaveInFlight = false;
 let pendingServerSaveBody = "";
 
@@ -87,12 +95,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function bindElements() {
   [
-    "saveStatus", "saveAllBtn", "printBtn", "resetBtn", "addCustomerBtn", "addQuoteBtn",
-    "exportDataBtn", "importDataBtn", "bindFileBtn", "saveFileBtn", "importDataFile",
+    "saveStatus", "saveAllBtn", "printBtn", "resetBtn", "addQuoteBtn",
+    "exportDataBtn", "importDataBtn", "importDataFile",
     "customerName", "customerContact", "customerPhone", "customerAddress", "customerList", "quoteList",
     "projectName", "editorProjectNameTitle", "showAmountColumns", "clientName", "clientPhone", "clientAddress", "quoteDate", "priceVersion", "libraryPriceVersion",
-    "cloneVersionBtn", "renameVersionBtn", "managementRate", "designRate", "taxRate",
-    "laborSubtotalText", "materialSubtotalText", "managementText", "designText", "taxText", "grandTotalText", "addLineBtn", "addSpaceBtn", "addOverallSpaceBtn", "quoteLines",
+    "cloneVersionBtn", "renameVersionBtn", "deleteVersionBtn", "managementRate", "designRate", "taxRate",
+    "laborSubtotalText", "materialSubtotalText", "managementText", "designText", "taxText", "grandTotalText", "quoteLines",
     "priceSearch", "priceCount", "priceList", "addPriceItemBtn", "previewTitle", "previewMeta", "previewTotal",
     "materialSearch", "materialCount", "materialList", "addMaterialBtn",
     "templateList", "templateCount", "addTemplateBtn",
@@ -148,27 +156,6 @@ function migrateOldState(oldState) {
   const customer = normalizeCustomer({
     id: quote.customerId,
     name: quote.clientName || "默认客户"
-  });
-  state.customers = [customer];
-  state.quotes = [quote];
-  state.activeCustomerId = customer.id;
-  state.activeQuoteId = quote.id;
-}
-
-function createStarterData() {
-  const customer = normalizeCustomer({ id: makeId("customer"), name: "默认客户" });
-  const quote = normalizeQuote({
-    id: makeId("quote"),
-    customerId: customer.id,
-    name: "马市角办公楼三层改造",
-    clientName: customer.name,
-    projectName: "马市角办公楼三层改造",
-    priceVersionId: state.activeVersionId,
-    lines: [
-      makeQuoteItem("拆除墙体/平米", "墙体", 15),
-      makeQuoteItem("套装门拆除/樘", "套装门", 1),
-      makeQuoteItem("电路开槽/米", "水电", 50)
-    ]
   });
   state.customers = [customer];
   state.quotes = [quote];
@@ -283,6 +270,10 @@ function normalizeTemplateItem(item, index = 0) {
   };
 }
 
+/**
+ * @param {Array<Partial<MaterialKind>>} [kinds]
+ * @returns {MaterialKind[]}
+ */
 function normalizeGenericMaterials(kinds = []) {
   const byName = new Map();
   [...DEFAULT_GENERIC_MATERIALS.map((entry, index) => ({
@@ -301,6 +292,11 @@ function normalizeGenericMaterials(kinds = []) {
   return [...byName.values()].sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
+/**
+ * @param {Partial<MaterialKind> & { category?: string }} kind
+ * @param {number} [index]
+ * @returns {MaterialKind}
+ */
 function normalizeGenericMaterial(kind, index = 0) {
   const name = String(kind?.name || "").trim();
   return {
@@ -542,6 +538,11 @@ function normalizeLaborAliases(aliases) {
   }, []);
 }
 
+/**
+ * @param {Partial<Material> & { category?: string, secondaryCategory?: string, subcategory?: string }} material
+ * @param {number} [index]
+ * @returns {Material}
+ */
 function normalizeMaterial(material, index = 0) {
   const quoteUnitPrice = material?.quoteUnitPrice ?? material?.unitPrice;
   const primaryCategory = String(material?.primaryCategory || material?.category || MATERIAL_PRIMARY_CATEGORIES[0]).trim();
@@ -629,6 +630,10 @@ function normalizeCustomer(customer) {
   };
 }
 
+/**
+ * @param {Partial<Quote>} quote
+ * @returns {Quote}
+ */
 function normalizeQuote(quote) {
   const customer = state.customers.find((item) => item.id === quote.customerId);
   const hasDesignRate = quote.designRate !== undefined && quote.designRate !== null;
@@ -661,6 +666,10 @@ function normalizeQuote(quote) {
   return normalized;
 }
 
+/**
+ * @param {Quote} quote
+ * @returns {QuoteItem[]}
+ */
 function sortQuoteItemsForReload(quote) {
   const spaces = (quote.spaces || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
   const knownSpaceIds = new Set(spaces.map((space) => space.id));
@@ -732,6 +741,11 @@ function materialLibraryRank(item) {
   };
 }
 
+/**
+ * @param {Array<Partial<ProjectGroup>>} spaces
+ * @param {QuoteItem[]} [lines]
+ * @returns {ProjectGroup[]}
+ */
 function normalizeProjectGroups(spaces, lines = []) {
   const hasCollapsedState = (spaces || []).some((space) => Object.prototype.hasOwnProperty.call(space || {}, "collapsed"));
   const normalized = (spaces || []).map((space, index) => normalizeProjectGroup(space, index)).filter((space) => space.name);
@@ -769,6 +783,11 @@ function normalizeProjectGroups(spaces, lines = []) {
   return sorted;
 }
 
+/**
+ * @param {Partial<ProjectGroup> & { type?: string }} space
+ * @param {number} [index]
+ * @returns {ProjectGroup}
+ */
 function normalizeProjectGroup(space, index = 0) {
   const wasOverall = space.type === "overall" || String(space.name || "").trim() === "整体";
   const area = toNumber(space.area) || (wasOverall ? toNumber(space.buildingArea) : 0);
@@ -882,8 +901,6 @@ function bindEvents() {
   els.exportDataBtn.addEventListener("click", exportDataFile);
   els.importDataBtn.addEventListener("click", () => els.importDataFile.click());
   els.importDataFile.addEventListener("change", importDataFile);
-  if (els.bindFileBtn) els.bindFileBtn.addEventListener("click", bindDataFile);
-  if (els.saveFileBtn) els.saveFileBtn.addEventListener("click", saveToBoundFile);
   els.printBtn.addEventListener("click", () => {
     switchPage("editor");
     setTimeout(printQuotePdf, 50);
@@ -892,10 +909,7 @@ function bindEvents() {
   els.addQuoteBtn.addEventListener("click", addQuote);
   els.cloneVersionBtn.addEventListener("click", cloneVersion);
   els.renameVersionBtn.addEventListener("click", renameVersion);
-  if (els.addLineBtn) els.addLineBtn.addEventListener("click", addQuoteItem);
-  if (els.addSpaceBtn) els.addSpaceBtn.textContent = "添加项目组合";
-  if (els.addOverallSpaceBtn) els.addOverallSpaceBtn.remove();
-  if (els.addSpaceBtn) els.addSpaceBtn.addEventListener("click", addProjectGroup);
+  if (els.deleteVersionBtn) els.deleteVersionBtn.addEventListener("click", deleteVersion);
   if (els.addPriceItemBtn) els.addPriceItemBtn.addEventListener("click", addLaborItem);
   if (els.addMaterialBtn) els.addMaterialBtn.addEventListener("click", addMaterial);
   if (els.addTemplateBtn) els.addTemplateBtn.addEventListener("click", addTemplate);
@@ -1004,14 +1018,6 @@ function findGenericMaterial(idOrName) {
   return state.genericMaterials.find((kind) => kind.id === idOrName || normalizeName(kind.name) === cleaned);
 }
 
-function findMaterialByName(name, category = "") {
-  const cleaned = normalizeName(name);
-  return state.materials.find((material) => (
-    normalizeName(material.name) === cleaned
-    && (!category || material.primaryCategory === category)
-  ));
-}
-
 function materialPrimaryCategoryOptions(value = "") {
   const categories = new Set(MATERIAL_PRIMARY_CATEGORIES);
   state.materials.forEach((material) => {
@@ -1094,6 +1100,11 @@ function makeQuoteItem(itemName = "", area = "", quantity = 0, spaceId = "") {
   });
 }
 
+/**
+ * @param {Partial<QuoteItem> & { itemName?: string, customPrice?: number }} line
+ * @param {string} [versionId]
+ * @returns {QuoteItem}
+ */
 function normalizeQuoteItem(line, versionId = currentVersion()?.id) {
   const priceItemName = line.priceItemName || line.itemName || "";
   const item = findLaborItem(priceItemName, versionId);
@@ -1121,6 +1132,10 @@ function normalizeQuoteItem(line, versionId = currentVersion()?.id) {
   };
 }
 
+/**
+ * @param {Partial<QuoteItem>|null|undefined} line
+ * @returns {boolean}
+ */
 function isMaterialQuoteItem(line) {
   return line?.sourceType === "material" || Boolean(line?.materialId || line?.materialKindId);
 }
@@ -1765,26 +1780,6 @@ function sortedProjectGroups(quote = currentQuote()) {
 
 function quoteItemsForProjectGroup(quote, spaceId) {
   return (quote.lines || []).filter((line) => line.spaceId === spaceId);
-}
-
-function sortQuoteItemsInProjectGroupByLibraryOrder(spaceId) {
-  const quote = currentQuote();
-  if (!quote || !spaceId) return;
-  const scored = quote.lines.map((line, index) => {
-    if (line.spaceId !== spaceId) return { line, index, keep: true };
-    return {
-      line,
-      index,
-      keep: false,
-      order: libraryOrderEntryForQuoteLine(line, index, quote.priceVersionId)
-    };
-  });
-  const sortedSpaceLines = scored
-    .filter((entry) => !entry.keep)
-    .sort((a, b) => compareLibraryOrderEntries(a.order, b.order))
-    .map((entry) => entry.line);
-  let cursor = 0;
-  quote.lines = scored.map((entry) => entry.keep ? entry.line : sortedSpaceLines[cursor++]);
 }
 
 function renderSuggestions(container, line, query) {
@@ -3326,24 +3321,6 @@ function showNoticeModal(title = "提示", message = "") {
   overlay.querySelector(".modal-confirm").focus();
 }
 
-function templateMaterialCategoryOptions(value = "") {
-  return materialCategoryOptions(value || MATERIAL_PRIMARY_CATEGORIES[0], false);
-}
-
-function templateMaterialOptions(category = "", selectedId = "") {
-  const materials = materialsForCategory(category);
-  const list = materials.length ? materials : state.materials;
-  return [`<option value="">选择主材</option>`].concat(list.map((material) => (
-    `<option value="${escapeHtml(material.id)}" ${material.id === selectedId ? "selected" : ""}>${escapeHtml(material.name)}</option>`
-  ))).join("");
-}
-
-function templateLaborOptions(selectedName = "") {
-  return [`<option value="">选择工费条目</option>`].concat(currentLaborItems().map((item) => (
-    `<option value="${escapeHtml(item.name)}" ${item.name === selectedName ? "selected" : ""}>${escapeHtml(item.name)}</option>`
-  ))).join("");
-}
-
 function renderTemplateInsertRow(position) {
   return `
     <tr class="template-insert-row" data-position="${position}">
@@ -4382,6 +4359,10 @@ function renderPreviewTableHead(showAmountColumns = true) {
   `;
 }
 
+/**
+ * @param {Quote|null|undefined} [quote]
+ * @returns {QuoteTotals}
+ */
 function calculateTotals(quote = currentQuote()) {
   const spacesById = new Map((quote?.spaces || []).map((space) => [space.id, space]));
   const subtotals = (quote?.lines || []).reduce((sum, line) => {
@@ -4404,6 +4385,10 @@ function calculateTotals(quote = currentQuote()) {
   };
 }
 
+/**
+ * @param {QuoteItem} line
+ * @returns {number}
+ */
 function calculateQuoteItemUnitPrice(line) {
   const item = findLaborItem(line.priceItemName, currentQuote()?.priceVersionId);
   const material = line.materialId ? findMaterial(line.materialId) : null;
@@ -4417,6 +4402,11 @@ function calculateQuoteItemUnitPrice(line) {
   return splitPrice;
 }
 
+/**
+ * @param {QuoteItem} line
+ * @param {string} [versionId]
+ * @returns {number}
+ */
 function calculateQuoteItemCostUnitPrice(line, versionId = currentQuote()?.priceVersionId || currentVersion()?.id) {
   const item = findLaborItem(line.priceItemName, versionId);
   const material = line.materialId ? findMaterial(line.materialId) : null;
@@ -4428,14 +4418,28 @@ function calculateQuoteItemCostUnitPrice(line, versionId = currentQuote()?.price
   return materialUnitPriceForItem(material, item, "cost") + toNumber(item.costAuxiliary) + toNumber(item.costLabor);
 }
 
+/**
+ * @param {Partial<LaborItem>|null|undefined} item
+ * @returns {number}
+ */
 function calculateLaborItemUnitPrice(item) {
   return toNumber(item?.auxiliary) + toNumber(item?.labor);
 }
 
+/**
+ * @param {Partial<LaborItem>|null|undefined} item
+ * @returns {number}
+ */
 function calculateLaborItemCostUnitPrice(item) {
   return toNumber(item?.costAuxiliary) + toNumber(item?.costLabor);
 }
 
+/**
+ * @param {Partial<Material>|null|undefined} material
+ * @param {Partial<LaborItem>|null|undefined} item
+ * @param {"quote"|"cost"} [mode]
+ * @returns {number}
+ */
 function materialUnitPriceForItem(material, item, mode = "quote") {
   if (!material) return 0;
   const basePrice = mode === "cost" ? toNumber(material.costUnitPrice) : toNumber(material.quoteUnitPrice);
@@ -4450,6 +4454,11 @@ function materialUnitPriceForItem(material, item, mode = "quote") {
   return basePrice;
 }
 
+/**
+ * @param {number|string} pieceArea
+ * @param {number|string} piecePrice
+ * @returns {number}
+ */
 function calculateGenericMaterialUnitPrice(pieceArea, piecePrice) {
   const area = toNumber(pieceArea);
   if (area <= 0) return 0;
@@ -4493,15 +4502,6 @@ function evaluateQuantityFormula(formula, context, options = {}) {
   } catch {
     return null;
   }
-}
-
-function addCustomer() {
-  const customer = normalizeCustomer({ id: makeId("customer"), name: "新客户" });
-  state.customers.push(customer);
-  state.activeCustomerId = customer.id;
-  state.activeQuoteId = "";
-  saveState("已新建客户");
-  renderAll();
 }
 
 function addQuote() {
@@ -4563,23 +4563,6 @@ function applicableTemplates(workType) {
   return (state.templates || [])
     .filter((template) => template.items.some((item) => item.sourceType === workType))
     .sort((a, b) => a.sortOrder - b.sortOrder);
-}
-
-function chooseTemplateForSpace(workType) {
-  const options = applicableTemplates(workType);
-  if (!options.length) return null;
-  const typeName = workType === "material" ? "主材" : "清工辅料";
-  const lines = options.map((template, index) => {
-    const count = template.items.filter((item) => item.sourceType === workType).length;
-    return `${index + 1}. ${template.name}（${count}）`;
-  }).join("\n");
-  const input = prompt(`套用${typeName}模板（可空，输入序号或模板名）：\n\n${lines}`, "");
-  if (input === null) return null;
-  const cleaned = String(input || "").trim();
-  if (!cleaned) return null;
-  const byNumber = options[Number(cleaned) - 1];
-  if (byNumber) return byNumber;
-  return options.find((template) => normalizeName(template.name) === normalizeName(cleaned)) || null;
 }
 
 function applyTemplateToSpace(template, space) {
@@ -4890,10 +4873,6 @@ function createProjectGroupFromDialog(spaceName, templateId = "", insertPosition
   renderAll();
 }
 
-function addOverallSpace() {
-  addProjectGroup();
-}
-
 function projectGroupNameExists(name, excludeId = "") {
   const cleaned = String(name || "").trim();
   return currentQuote()?.spaces?.some((space) => (
@@ -5134,6 +5113,33 @@ function renameVersion() {
   renderAll();
 }
 
+function deleteVersion() {
+  const version = currentVersion();
+  if (!version) return;
+  if (state.versions.length <= 1) {
+    showNoticeModal("不能删除", "至少保留一个工费版本。");
+    return;
+  }
+  const quoteCount = state.quotes.filter((quote) => quote.priceVersionId === version.id).length;
+  const message = quoteCount
+    ? `这个工费版本正在被 ${quoteCount} 个报价使用。删除后，这些报价会切换到另一个工费版本。`
+    : "删除后不能直接恢复。";
+  confirmSimpleDelete(version.name || "当前工费版本", () => {
+    const deletedIndex = state.versions.findIndex((entry) => entry.id === version.id);
+    state.versions = state.versions.filter((entry) => entry.id !== version.id);
+    const fallback = state.versions[Math.max(0, Math.min(deletedIndex, state.versions.length - 1))] || state.versions[0];
+    state.activeVersionId = fallback?.id || "";
+    state.quotes.forEach((quote) => {
+      if (quote.priceVersionId === version.id) {
+        quote.priceVersionId = state.activeVersionId;
+        quote.lines = quote.lines.map((line) => normalizeQuoteItem(line, quote.priceVersionId));
+      }
+    });
+    saveState("已删除工费版本");
+    renderAll();
+  }, { message });
+}
+
 async function backupDatabase() {
   try {
     const response = await fetch("/api/backup", { method: "POST" });
@@ -5240,46 +5246,6 @@ function applyImportedState(parsed) {
   state.returnToTemplateId = data.returnToTemplateId || "";
   state.returnToTemplateItemId = data.returnToTemplateItemId || "";
   normalizeState();
-}
-
-async function bindDataFile() {
-  if (!window.showSaveFilePicker) {
-    alert("当前浏览器不支持直接绑定本地文件。可以使用“导出数据”和“导入数据”来保存和恢复。");
-    return;
-  }
-  try {
-    dataFileHandle = await window.showSaveFilePicker({
-      suggestedName: "报价数据.json",
-      types: [{
-        description: "报价数据 JSON",
-        accept: { "application/json": [".json"] }
-      }]
-    });
-    await writeStateToFileHandle(dataFileHandle);
-    saveState("已绑定并保存到文件");
-  } catch (error) {
-    if (error?.name !== "AbortError") alert("绑定文件失败，请重试。");
-  }
-}
-
-async function saveToBoundFile() {
-  if (!dataFileHandle) {
-    await bindDataFile();
-    return;
-  }
-  try {
-    await writeStateToFileHandle(dataFileHandle);
-    saveState("已保存到文件");
-  } catch (error) {
-    dataFileHandle = null;
-    alert("保存到文件失败，请重新绑定文件。");
-  }
-}
-
-async function writeStateToFileHandle(handle) {
-  const writable = await handle.createWritable();
-  await writable.write(JSON.stringify(getPortableState(), null, 2));
-  await writable.close();
 }
 
 function sortedPackages() {
@@ -6709,17 +6675,6 @@ function syncQuoteItemLaborParts(item) {
   });
 }
 
-function clearInvalidQuoteItemMaterials(item) {
-  const validMaterialIds = new Set(materialsForItem(item).map((material) => material.id));
-  if (item.defaultMaterialId && !validMaterialIds.has(item.defaultMaterialId)) item.defaultMaterialId = "";
-  state.quotes.forEach((quote) => {
-    quote.lines.forEach((line) => {
-      if (line.priceItemName !== item.name || !line.materialId) return;
-      if (!validMaterialIds.has(line.materialId)) line.materialId = "";
-    });
-  });
-}
-
 function syncQuoteItemLaborItemName(oldName, newName) {
   const oldDisplayName = displayEngineeringName(oldName);
   state.quotes.forEach((quote) => {
@@ -6828,37 +6783,6 @@ function flushServerSaveBeforeUnload() {
   }
 }
 
-async function loadStateFromTauri() {
-  const invoke = getTauriInvoke();
-  if (!invoke) return null;
-  try {
-    const text = await invoke("load_quote_data");
-    if (!text) return null;
-    const parsed = JSON.parse(text);
-    return parsed?.data || parsed;
-  } catch (error) {
-    console.warn("Tauri load failed", error);
-    return null;
-  }
-}
-
-async function saveStateToTauri() {
-  const invoke = getTauriInvoke();
-  if (!invoke) return;
-  try {
-    await invoke("save_quote_data", {
-      data: JSON.stringify(getPortableState(), null, 2)
-    });
-    tauriReady = true;
-  } catch (error) {
-    console.warn("Tauri save failed", error);
-  }
-}
-
-function getTauriInvoke() {
-  return window.__TAURI__?.core?.invoke || window.__TAURI__?.tauri?.invoke || null;
-}
-
 function printQuotePdf() {
   const previousTitle = document.title;
   document.title = buildPdfFileName();
@@ -6961,11 +6885,6 @@ function flashQuoteItemSaved(node) {
     node.classList.add("line-saved");
     setTimeout(() => node.classList.remove("line-saved"), 700);
   });
-}
-
-function formatPercentInput(value) {
-  const percent = toNumber(value) * 100;
-  return Number.isInteger(percent) ? String(percent) : String(Math.round(percent * 10) / 10);
 }
 
 function parsePercentInput(value) {

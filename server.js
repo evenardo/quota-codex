@@ -6,6 +6,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
+/**
+ * @typedef {import("./server-types.js").PortableState} PortableState
+ * @typedef {import("./server-types.js").SqliteMaterial} SqliteMaterial
+ * @typedef {import("./server-types.js").SqliteMaterialKind} SqliteMaterialKind
+ */
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const dataDir = process.env.QUOTE_DATA_DIR ? path.resolve(process.env.QUOTE_DATA_DIR) : path.join(__dirname, "data");
@@ -924,6 +930,9 @@ function formatBackupTimestamp(date) {
   ].join("");
 }
 
+/**
+ * @returns {PortableState}
+ */
 function loadPortableState() {
   const data = {
     versions: loadPriceVersions(),
@@ -976,6 +985,9 @@ function loadPriceCategories() {
   return db.prepare("SELECT id, name, description, sort_order AS sortOrder FROM labor_categories ORDER BY sort_order, rowid").all();
 }
 
+/**
+ * @returns {SqliteMaterial[]}
+ */
 function loadMaterials() {
   return db.prepare(`
     SELECT
@@ -997,6 +1009,9 @@ function loadMaterials() {
   `).all();
 }
 
+/**
+ * @returns {SqliteMaterialKind[]}
+ */
 function loadMaterialKinds() {
   return db.prepare(`
     SELECT
