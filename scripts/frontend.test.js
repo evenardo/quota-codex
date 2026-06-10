@@ -12,6 +12,7 @@ function loadFrontend() {
     requestAnimationFrame: (callback) => callback(),
     window: { innerHeight: 800 },
     location: { protocol: "http:" },
+    fetch: async () => ({ ok: true, json: async () => ({ ok: true }) }),
     localStorage: {
       getItem: () => null,
       setItem: () => {},
@@ -178,6 +179,7 @@ test("normalizes labor items, materials, categories, and package estimates", () 
   const genericMaterials = app.normalizeGenericMaterials([{
     id: "kind-floor",
     name: "地砖",
+    libraryCategory: "地面材料",
     primaryCategory: "砖",
     unit: "平米",
     calcCostArea: "0.32",
@@ -207,6 +209,7 @@ test("normalizes labor items, materials, categories, and package estimates", () 
   assert.equal(app.normalizePackageSection({ name: "Collapsed", collapsed: 1 }, 0).collapsed, true);
   assert.equal(genericMaterials.some((kind) => kind.name === "墙砖"), true);
   assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcCostArea, 0.32);
+  assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").libraryCategory, "地面材料");
   assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcCostPrice, 18);
   assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcQuoteArea, 0.32);
   assert.equal(genericMaterials.find((kind) => kind.id === "kind-floor").calcQuotePrice, 22);
@@ -225,6 +228,153 @@ test("normalizes labor items, materials, categories, and package estimates", () 
   assert.equal(estimate.groups.length, 1);
   assert.equal(estimate.items[0].sourceType, "labor");
   assert.equal(estimate.items[0].includedType, "included");
+});
+
+test("normalizes server materialKinds into abstract materials", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.genericMaterials = [];
+    state.materialKinds = [{
+      id: "generic-material-tile",
+      name: "Tile",
+      libraryCategory: "Tile category",
+      primaryCategory: "Tile",
+      unit: "m2",
+      costUnitPrice: 12,
+      quoteUnitPrice: 23
+    }];
+    normalizeState();
+  `);
+  const state = getFrontendState(app);
+  const tile = state.genericMaterials.find((kind) => kind.id === "generic-material-tile");
+
+  assert.equal(tile.costUnitPrice, 12);
+  assert.equal(tile.quoteUnitPrice, 23);
+  assert.equal(tile.libraryCategory, "Tile category");
+});
+
+test("saves abstract material conversion fields through the partial API", async () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.fetchCalls = [];
+    fetch = async (url, options = {}) => {
+      state.fetchCalls.push({ url, method: options.method, body: options.body });
+      return { ok: true, json: async () => ({ ok: true }) };
+    };
+  `);
+  const kind = {
+    id: "kind-tile",
+    name: "Tile",
+    libraryCategory: "Tile",
+    primaryCategory: "Tile",
+    unit: "m2",
+    costUnitPrice: 56.25,
+    quoteUnitPrice: 68.75,
+    calcCostArea: 0.32,
+    calcCostPrice: 18,
+    calcQuoteArea: 0.32,
+    calcQuotePrice: 22
+  };
+
+  const saved = await app.saveMaterialKindToServerNow(kind, "saved");
+  const call = getFrontendState(app).fetchCalls[0];
+  const body = JSON.parse(call.body);
+
+  assert.equal(saved, true);
+  assert.equal(call.url, "/api/material-kinds/kind-tile");
+  assert.equal(call.method, "PATCH");
+  assert.equal(body.costUnitPrice, 56.25);
+  assert.equal(body.quoteUnitPrice, 68.75);
+  assert.equal(body.calcCostArea, 0.32);
+  assert.equal(body.calcCostPrice, 18);
+  assert.equal(body.calcQuoteArea, 0.32);
+  assert.equal(body.calcQuotePrice, 22);
+});
+
+test("refreshes queued full save before saving abstract material base prices", async () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.fetchCalls = [];
+    state.genericMaterials = [{
+      id: "kind-tile",
+      name: "Tile",
+      libraryCategory: "Tile",
+      primaryCategory: "Tile",
+      unit: "m2",
+      costUnitPrice: 56.25,
+      quoteUnitPrice: 68.75,
+      sortOrder: 0
+    }];
+    pendingServerSaveBody = JSON.stringify({ genericMaterials: [{ id: "kind-tile", costUnitPrice: 0, quoteUnitPrice: 0 }] });
+    fetch = async (url, options = {}) => {
+      state.fetchCalls.push({ url, method: options.method, body: options.body });
+      return { ok: true, json: async () => ({ ok: true }) };
+    };
+  `);
+  const kind = getFrontendState(app).genericMaterials[0];
+
+  const saved = await app.saveMaterialKindToServerNow(kind, "saved");
+  const queued = vm.runInContext("JSON.parse(pendingServerSaveBody)", app);
+
+  assert.equal(saved, true);
+  assert.equal(queued.data.materialKinds[0].costUnitPrice, 56.25);
+  assert.equal(queued.data.materialKinds[0].quoteUnitPrice, 68.75);
+});
+
+test("orders and toggles abstract material management categories", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.genericMaterials = [
+      normalizeGenericMaterial({ id: "kind-a", name: "A", libraryCategory: "B", primaryCategory: "其他", sortOrder: 0 }, 0),
+      normalizeGenericMaterial({ id: "kind-b", name: "B", libraryCategory: "A", primaryCategory: "其他", sortOrder: 1 }, 1)
+    ];
+    state.genericMaterialCategoryState = {
+      B: { collapsed: false, sortOrder: 0 },
+      A: { collapsed: true, sortOrder: 1 }
+    };
+    saveState = () => {};
+    renderMaterials = () => {};
+  `);
+
+  assert.deepEqual(plain(app.sortedGenericMaterialCategories()), ["B", "A"]);
+  assert.deepEqual(plain(app.genericMaterialsForManagement().map((kind) => kind.id)), ["kind-a", "kind-b"]);
+
+  app.moveGenericMaterialCategoryBefore("A", "B");
+  let state = getFrontendState(app);
+  assert.deepEqual(plain(app.sortedGenericMaterialCategories()), ["A", "B"]);
+  assert.equal(state.genericMaterialCategoryState.A.sortOrder, 0);
+
+  app.toggleGenericMaterialCategory("A");
+  state = getFrontendState(app);
+  assert.equal(state.genericMaterialCategoryState.A.collapsed, false);
+  assert.equal(state.genericMaterialCategoryState.B.collapsed, true);
+
+  app.toggleGenericMaterialCategory("A");
+  state = getFrontendState(app);
+  assert.equal(state.genericMaterialCategoryState.A.collapsed, true);
+  assert.equal(state.genericMaterialCategoryState.B.collapsed, true);
+});
+
+test("renders abstract material insert slots and inserts at requested category position", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.genericMaterials = [
+      normalizeGenericMaterial({ id: "kind-a", name: "A", libraryCategory: "砖", primaryCategory: "其他", sortOrder: 0 }, 0),
+      normalizeGenericMaterial({ id: "kind-b", name: "B", libraryCategory: "砖", primaryCategory: "其他", sortOrder: 1 }, 1)
+    ];
+    state.genericMaterialCategoryState = { "砖": { collapsed: false, sortOrder: 0 } };
+    saveState = () => {};
+    renderMaterials = () => {};
+  `);
+
+  const html = app.renderGenericMaterialLibrary();
+  assert.equal((html.match(/generic-material-insert-row/g) || []).length, 3);
+  app.addGenericMaterialAt("砖", 1);
+  const materials = getFrontendState(app).genericMaterials
+    .filter((kind) => kind.libraryCategory === "砖")
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+  assert.equal(materials.length, 3);
+  assert.equal(materials[1].name, "新抽象主材");
 });
 
 test("normalizes project groups and assigns orphan lines to matching group names", () => {
@@ -761,7 +911,11 @@ test("adds package section items at requested position", () => {
 test("reorders package sections and renumbers sortOrder", () => {
   const app = loadFrontend();
   setFrontendState(app, `
-    saveState = (message) => { state.lastSaveMessage = message; };
+    state.fetchCalls = [];
+    fetch = async (url, options = {}) => {
+      state.fetchCalls.push({ url, method: options.method, body: options.body });
+      return { ok: true, json: async () => ({ ok: true }) };
+    };
     renderPackages = () => { state.renderedPackages = true; };
   `);
   const packageEntry = {
@@ -776,14 +930,22 @@ test("reorders package sections and renumbers sortOrder", () => {
 
   assert.deepEqual(plain(packageEntry.sections.map((section) => section.id)), ["section-c", "section-a", "section-b"]);
   assert.deepEqual(plain(packageEntry.sections.map((section) => section.sortOrder)), [0, 1, 2]);
-  assert.equal(getFrontendState(app).lastSaveMessage, "\u5df2\u8c03\u6574\u5957\u9910\u5206\u7c7b\u987a\u5e8f");
+  assert.deepEqual(plain(getFrontendState(app).fetchCalls.map((call) => call.url)), [
+    "/api/package-sections/section-c",
+    "/api/package-sections/section-a",
+    "/api/package-sections/section-b"
+  ]);
   assert.equal(getFrontendState(app).renderedPackages, true);
 });
 
 test("deletes packages only after simple in-page confirmation", () => {
   const app = loadFrontend();
   setFrontendState(app, `
-    saveState = (message) => { state.lastSaveMessage = message; };
+    state.fetchCalls = [];
+    fetch = async (url, options = {}) => {
+      state.fetchCalls.push({ url, method: options.method, body: options.body });
+      return { ok: true, json: async () => ({ ok: true }) };
+    };
     renderAll = () => { state.renderedAll = true; };
     confirmSimpleDelete = (name, onConfirm, options = {}) => {
       state.confirmName = name;
@@ -810,7 +972,8 @@ test("deletes packages only after simple in-page confirmation", () => {
   assert.equal(state.activePackageId, "pkg-b");
   assert.equal(state.activePackageEstimateId, "estimate-b");
   assert.equal(state.returnToPackageId, "");
-  assert.equal(state.lastSaveMessage, "\u5df2\u5220\u9664\u5957\u9910");
+  assert.equal(state.fetchCalls.some((call) => call.url === "/api/packages/pkg-a" && call.method === "DELETE"), true);
+  assert.equal(state.fetchCalls.some((call) => call.url === "/api/app-state" && call.method === "PATCH"), true);
   assert.equal(state.renderedAll, true);
 });
 

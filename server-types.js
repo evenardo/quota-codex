@@ -27,6 +27,7 @@
  * @property {string} id
  * @property {number} sortOrder
  * @property {string} name
+ * @property {string} libraryCategory
  * @property {string} primaryCategory
  * @property {string} unit
  * @property {number} costUnitPrice

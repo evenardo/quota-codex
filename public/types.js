@@ -24,6 +24,7 @@
  * @typedef {Object} MaterialKind
  * @property {string} id
  * @property {string} name
+ * @property {string} libraryCategory
  * @property {string} primaryCategory
  * @property {string} unit
  * @property {number} costUnitPrice

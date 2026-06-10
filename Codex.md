@@ -781,3 +781,114 @@ npm run dev
 - 涉及文件：`public/app.js`、`Codex.md`
 - 测试情况：已运行 `npm.cmd test`，39 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。第一次运行时本地服务未启动导致 smoke test 连接失败，临时启动当前目录 Node 服务后重跑通过，随后已停止临时服务。
 - 后续注意：后台函数暂未发现明确死代码；很多只被调用一次的函数属于数据库迁移、SQLite 读写或备份链路，不建议在没有迁移测试前删除。
+
+### 2026-06-10 17:32
+
+- 用户诉求：顶部操作区的“保存、导出数据、导入数据”看起来不再需要，希望确认用途并删除无用入口。
+- 处理结果：移除顶部手动保存按钮、JSON 导出按钮、JSON 导入按钮和隐藏文件输入；删除对应的 JSON 导入导出函数。当前保存仍通过各处 `saveState()` 自动写入 SQLite，数据保护以“备份数据库”和自动 SQLite 备份为主。
+- 涉及文件：`public/index.html`、`public/app.js`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，39 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：如果以后需要跨机器迁移数据，优先考虑提供 SQLite 备份/恢复入口，而不是恢复旧 JSON 导入导出。
+
+### 2026-06-10 17:54
+
+- 用户诉求：抽象主材需要再加一层分类，仅用于主材库里管理抽象主材，暂时不影响其他页面。
+- 处理结果：为抽象主材新增 `libraryCategory` / SQLite `material_kinds.library_category` 字段；抽象主材表新增“管理分类”列，并按该分类分段显示。该字段不写入报价行、模板项或套餐项，也不参与主材匹配逻辑。
+- 涉及文件：`public/app.js`、`public/styles.css`、`server.js`、`public/types.js`、`server-types.js`、`scripts/frontend.test.js`、`scripts/backend.test.js`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，39 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：如果以后希望这个分类影响其他页面，需要另行明确它和 `primaryCategory` 的关系；当前 `primaryCategory` 仍是报价/模板/套餐使用的主材匹配类目。
+
+### 2026-06-10 18:12
+
+- 用户诉求：抽象主材的管理分类也要支持收缩、唯一展开和排序，使用习惯对齐其他页面。
+- 处理结果：抽象主材管理分类新增独立 UI 状态 `genericMaterialCategoryState`，保存每个分类的 `collapsed` 与 `sortOrder`；分类头可点击展开/收缩，展开某个分类时其他分类自动收缩，再点已展开分类可全部收起；分类头支持拖拽排序。抽象主材条目的拖拽排序限制在同一管理分类内，避免跨分类拖动造成显示顺序与分类归属冲突。
+- 涉及文件：`public/app.js`、`public/styles.css`、`server.js`、`scripts/frontend.test.js`、`scripts/backend.test.js`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，40 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：`genericMaterialCategoryState` 只影响主材库管理界面，不参与报价、模板、套餐或供货商主材匹配；业务匹配仍使用 `primaryCategory`。
+
+### 2026-06-10 18:24
+
+- 用户诉求：抽象主材管理分类不需要额外的“展开/收缩”文字按钮，左侧六点按钮同时承担拖动排序和展开/收缩。
+- 处理结果：移除分类头的文字展开/收缩按钮；六点按钮单击切换分类展开状态，按住拖动调整分类顺序；分类名称区域不再触发展开/收缩，减少误触。
+- 涉及文件：`public/app.js`、`public/styles.css`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，40 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：六点按钮是该分类头唯一的操作入口；如果未来增加右键菜单或更多分类操作，应避免重新引入文字按钮造成拥挤。
+
+### 2026-06-10 18:34
+
+- 用户诉求：这个带箭头的六点按钮很好，希望所有相似功能的地方行为统一，并区分“可展开”与“仅排序”。
+- 处理结果：新增通用样式 `expandable-drag-handle`，统一用于项目组合、模板、套餐说明分类、抽象主材管理分类这些同时支持展开/收缩和拖动排序的块；按钮展开时显示向下箭头，收起时显示向右箭头。普通工费/主材等仅排序行仍保留纯六点按钮，不显示箭头。移除项目组合、模板、套餐说明分类头部空白区域点击展开的行为，统一为只有六点按钮负责展开/收缩与移动。
+- 涉及文件：`public/app.js`、`public/styles.css`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，40 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：如果以后新增“既能折叠又能排序”的卡片/分组，应直接使用 `expandable-drag-handle`，不要使用普通 `price-drag` 或单独文字展开按钮。
+
+### 2026-06-10 18:42
+
+- 用户诉求：行间添加功能仍要使用细的悬浮按钮样式，避免插入区变得过高、过重。
+- 处理结果：将项目组合之间的插入槽重新压回薄悬浮条样式；现有报价行、模板项、套餐说明项、套餐测算项、工费库行间插入继续保持细线 hover 出现的小按钮。
+- 涉及文件：`public/styles.css`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，40 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：行间添加和展开/排序是两类交互；行间添加应保持低高度、悬浮显现，不要套用 `expandable-drag-handle` 或做成常驻大按钮。
+
+### 2026-06-10 18:50
+
+- 用户诉求：确认抽象主材表是否真的有行间添加功能，截图显示该功能并未出现在抽象主材行之间。
+- 处理结果：为抽象主材分类内新增行间插入槽，展开分类后在分类顶部和每个抽象主材条目后显示细悬浮添加入口；点击后按当前管理分类和指定位置插入新抽象主材。新增 `addGenericMaterialAt()`，并为该行为补前端测试。
+- 涉及文件：`public/app.js`、`public/styles.css`、`scripts/frontend.test.js`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，41 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：抽象主材行间添加只在展开的管理分类内出现，新增条目默认沿用该管理分类；分类收起时不显示插入槽。
+
+### 2026-06-10 18:58
+
+- 用户诉求：抽象主材换算里的“填成本”“填单价”不起作用，截图中结果仍为 `¥0.00`。
+- 处理结果：修复主材换算器取值逻辑；当换算输入框为空但存在 placeholder（如 `0.32`、`18`、`22`）时，计算和填入按钮会使用 placeholder 作为默认换算依据。点击“填成本/填单价”时同步保存对应换算面积与价格字段。供货商主材和抽象主材换算器共用该修正。
+- 涉及文件：`public/app.js`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，41 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：换算器界面如果显示示例 placeholder，应确保按钮行为也按示例值计算，避免用户以为已经输入但实际算 0。
+
+### 2026-06-10 19:04
+
+- 用户诉求：抽象主材行间添加槽仍然太宽太高；需要几乎没有高度，鼠标悬浮在横格线上时出现按钮，按钮显示时可以覆盖上下内容。
+- 处理结果：将抽象主材行间插入槽调整为 1px 高度，使用伪元素扩大 hover 感应区，按钮绝对层级浮在横线处，不再撑开上下行距。
+- 涉及文件：`public/styles.css`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，41 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：行间插入槽应优先采用 1px 线 + hover 感应区 + 浮层按钮；按钮可以压住上下内容，不应占据稳定布局高度。
+
+### 2026-06-10 19:10
+
+- 用户诉求：其他所有添加类入口都要按抽象主材的 1px 悬浮横线逻辑处理。
+- 处理结果：将套餐说明项、套餐测算项、模板项、报价行、项目组合之间、工费库行、抽象主材行等行间添加入口统一为 1px 稳定高度；使用 `::before` 提供 hover 感应区，按钮/动作组浮在横线上方，不撑开上下内容；移除插入槽 hover 背景块。
+- 涉及文件：`public/styles.css`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，41 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：新增任何行间添加入口时，应使用 1px 线、hover 感应区和浮层按钮；不要使用固定 6px/18px 高度或常驻背景块。
+
+### 2026-06-10 19:18
+
+- 用户诉求：抽象主材点击“填成本”后界面显示已填，但重新打开仍为 0，怀疑没有保存到数据库。
+- 处理结果：为关键填入按钮新增强保存路径 `saveStateNow()`，点击抽象主材/供货商主材的“填成本”“填单价”后立即构建最新状态并等待 `/api/data` 写入完成，再更新状态提示；避免普通异步自动保存尚未落库时刷新/关闭导致丢失。
+- 涉及文件：`public/app.js`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，41 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：涉及“按钮立即写入关键价格/成本”的操作，优先使用强保存；普通输入仍可使用排队式 `saveState()`。
+
+### 2026-06-10 19:34
+
+- 用户诉求：整包删除重写式保存设计不合理，希望改成“改哪里保存哪里”，并做好测试。
+- 处理结果：第一阶段新增局部保存 API：`PATCH /api/material-kinds/:id`、`DELETE /api/material-kinds/:id`、`PATCH /api/materials/:id`、`DELETE /api/materials/:id`、`PATCH /api/app-state`。主材库相关编辑已改为局部保存：抽象主材、供货商主材的字段编辑、换算依据、填成本/填单价、新增、删除、排序，以及抽象主材分类展开/排序状态，不再通过 `/api/data` 整包重写。
+- 涉及文件：`server.js`、`public/app.js`、`scripts/backend.test.js`、`scripts/frontend.test.js`、`Codex.md`
+- 测试情况：已运行 `npm.cmd test`，42 个测试通过，新增后端测试验证 PATCH 主材/抽象主材不会重写报价、模板等其它表，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。
+- 后续注意：当前整包保存仍保留给未迁移模块和备份/迁移用途；下一阶段应继续把工费库、报价行、模板、套餐逐步迁到局部 API。
+### 2026-06-10 19:52
+
+- 用户诉求：继续把保存逻辑拆细，最好做到每个格子单独保存，避免任何普通编辑触发整包重写。
+- 处理结果：第二阶段新增并接入局部保存 API：`PATCH/DELETE /api/labor-items/:id`、`PATCH/DELETE /api/quote-items/:id`、`PATCH/DELETE /api/quotes/:id`、`PATCH/DELETE /api/project-groups/:id`。工费库字段、工费别名、工费排序、工费删除后的报价行解绑、工费名称/单位/价格联动报价行、报价行字段、新增/删除/移动报价行、报价头字段、项目组合名称/图标/面积/周长/高度/折叠/排序/新增/删除/同步模板，均改为对应实体局部保存。项目组合面积/周长/高度变化会同步保存受推荐工程量影响的报价行。
+- 涉及文件：`server.js`、`public/app.js`、`scripts/backend.test.js`、`Codex.md`。
+- 测试情况：已运行 `npm.cmd test`，44 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过。新增后端测试覆盖主材局部保存、工费/报价行局部保存、报价头/项目组合局部保存，并验证不会重写无关表行。
+- 后续注意：整包 `/api/data` 仍作为未迁移模块、初始化、备份/迁移兜底保留；模板库、套餐库、客户/工费版本等仍有若干 `saveState()`，下一阶段可继续按实体拆 `template`、`template-item`、`package`、`package-section`、`package-estimate`、`customer`、`price-version` 等局部 API。
+
+### 2026-06-10 22:20
+
+- 用户诉求：抽象主材主行的“基准成本 / 基准单价”仍不保存；控制台显示 `Partial save failed Error: HTTP 404`，页面顶部提示“保存失败，请确认 Node 服务正在运行”。
+- 处理结果：先确认前端请求的是 `/api/material-kinds/:id`，而当前 `server.js` 已经包含该 PATCH 路由；随后用 `Invoke-WebRequest -Method Patch http://127.0.0.1:5177/api/material-kinds/test` 复现 404，说明浏览器连接的 5177 服务不是当前最新代码。通过 `netstat -ano | Select-String ':5177'` 找到占用端口的旧 `node.exe` 进程，执行 `Stop-Process -Id 16168` 停止旧服务，再从当前项目目录启动 `node server.js`，新进程为 `20780`。重新请求 `/api/material-kinds/codex-route-test` 返回 200，随后删除测试抽象主材。
+- 涉及文件：`public/app.js`、`server.js`、`scripts/frontend.test.js`、`Codex.md`
+- 测试情况：在修复保存时序后已运行 `npm.cmd test`，49 个测试通过，`server.js` 和 `app.js` 语法检查通过，smoke test 通过；本条为运行环境排查记录，追加文档时未重复跑测试。
+- 后续注意：如果页面提示保存失败且浏览器控制台出现 `Partial save failed Error: HTTP 404`，不要先怀疑字段名或 SQLite 写入逻辑；应优先确认当前端口跑的是最新项目服务。推荐排查顺序：1. 看控制台失败 URL；2. 用 `Invoke-WebRequest` 直接打同一 API；3. 用 `netstat -ano | Select-String ':5177'` 查端口占用；4. 停掉旧 Node 进程；5. 在当前工作目录重启 `node server.js` 或 `npm run dev`；6. 再用临时测试 id 验证 PATCH 返回 200，并删除测试数据。

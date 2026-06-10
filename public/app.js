@@ -10,6 +10,7 @@
 
 const STORAGE_KEY = "quote-tool-state-v2";
 const OLD_STORAGE_KEY = "quote-tool-state-v1";
+const APP_BUILD = "20260610-2359";
 const DEFAULT_MANAGEMENT_RATE = 8;
 const DEFAULT_DESIGN_RATE = 6;
 const DEFAULT_TAX_RATE = 9;
@@ -61,6 +62,7 @@ const state = {
   activePage: "manager",
   categoryLibraryCollapsed: true,
   genericMaterialLibraryCollapsed: true,
+  genericMaterialCategoryState: {},
   supplierMaterialLibraryCollapsed: false,
   customers: [],
   quotes: [],
@@ -95,8 +97,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function bindElements() {
   [
-    "saveStatus", "saveAllBtn", "printBtn", "resetBtn", "addQuoteBtn",
-    "exportDataBtn", "importDataBtn", "importDataFile",
+    "saveStatus", "printBtn", "resetBtn", "addQuoteBtn",
     "customerName", "customerContact", "customerPhone", "customerAddress", "customerList", "quoteList",
     "projectName", "editorProjectNameTitle", "showAmountColumns", "clientName", "clientPhone", "clientAddress", "quoteDate", "priceVersion", "libraryPriceVersion",
     "cloneVersionBtn", "renameVersionBtn", "deleteVersionBtn", "managementRate", "designRate", "taxRate",
@@ -117,6 +118,7 @@ async function loadState() {
   if (serverState) {
     Object.assign(state, serverState);
     normalizeState();
+    updateLoadedStatus();
     return;
   }
 
@@ -143,6 +145,11 @@ async function loadState() {
   }
 }
 
+function updateLoadedStatus() {
+  if (!els.saveStatus) return;
+  els.saveStatus.textContent = `已载入 SQLite · build ${APP_BUILD} · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
 function migrateOldState(oldState) {
   state.versions = oldState.versions?.length ? oldState.versions : state.versions;
   state.activeVersionId = oldState.activeVersionId || state.activeVersionId;
@@ -166,7 +173,9 @@ function migrateOldState(oldState) {
 function normalizeState() {
   state.versions = state.versions?.length ? state.versions : [];
   state.categories = normalizeCategories([...(state.categories || []), ...deriveCategoriesFromVersions(state.versions)]);
-  state.genericMaterials = normalizeGenericMaterials(state.genericMaterials || state.genericMaterialNames || state.materialKinds || []);
+  state.genericMaterials = normalizeGenericMaterials(
+    firstNonEmptyArray(state.materialKinds, state.genericMaterials, state.genericMaterialNames)
+  );
   state.materials = (state.materials || []).map((material, index) => normalizeMaterial(material, index));
   state.templates = (state.templates || []).map((template, index) => normalizeTemplate(template, index));
   state.packages = (state.packages || []).map((entry, index) => normalizePackage(entry, index));
@@ -195,6 +204,7 @@ function normalizeState() {
   state.activePage = state.activePage || "manager";
   state.categoryLibraryCollapsed = state.categoryLibraryCollapsed ?? true;
   state.genericMaterialLibraryCollapsed = state.genericMaterialLibraryCollapsed ?? true;
+  state.genericMaterialCategoryState = normalizeGenericMaterialCategoryState(state.genericMaterialCategoryState);
   state.supplierMaterialLibraryCollapsed = state.supplierMaterialLibraryCollapsed ?? false;
   if (!state.genericMaterialLibraryCollapsed && !state.supplierMaterialLibraryCollapsed) {
     state.supplierMaterialLibraryCollapsed = true;
@@ -202,6 +212,10 @@ function normalizeState() {
   state.returnToQuoteId = state.returnToQuoteId || "";
   state.returnToLineId = state.returnToLineId || "";
   state.pendingLineId = state.pendingLineId || "";
+}
+
+function firstNonEmptyArray(...values) {
+  return values.find((value) => Array.isArray(value) && value.length) || [];
 }
 
 function normalizeTemplate(template, index = 0) {
@@ -279,6 +293,7 @@ function normalizeGenericMaterials(kinds = []) {
   [...DEFAULT_GENERIC_MATERIALS.map((entry, index) => ({
     id: makeGenericMaterialId(entry[0]),
     name: entry[0],
+    libraryCategory: entry[1],
     primaryCategory: entry[1],
     unit: entry[2],
     sortOrder: index,
@@ -302,6 +317,7 @@ function normalizeGenericMaterial(kind, index = 0) {
   return {
     id: kind?.id || makeGenericMaterialId(name) || makeId("generic-material"),
     name,
+    libraryCategory: String(kind?.libraryCategory || kind?.managementCategory || kind?.library_category || kind?.primaryCategory || kind?.category || "未分类").trim(),
     primaryCategory: String(kind?.primaryCategory || kind?.category || MATERIAL_PRIMARY_CATEGORIES[0]).trim(),
     unit: String(kind?.unit || "项").trim(),
     costUnitPrice: toNumber(kind?.costUnitPrice),
@@ -595,7 +611,8 @@ function setLaborItemUnit(item, nextUnit) {
   if (duplicate) return false;
   item.unit = unit;
   item.name = nextName;
-  syncQuoteItemLaborItemName(oldName, item.name);
+  syncQuoteItemLaborItemName(oldName, item.name)
+    .forEach(({ quote, line }) => saveQuoteItemToServer(line, quote, "已同步工费名称"));
   if (state.expandedLaborItemName === oldName) state.expandedLaborItemName = item.name;
   if (state.pendingLaborItemName === oldName) state.pendingLaborItemName = item.name;
   return true;
@@ -614,7 +631,8 @@ function updateLaborItemNameFromInput(item, nextName, inputNode, rowNode) {
   const unitNode = rowNode?.querySelector?.(".price-unit-toggle b");
   if (unitNode) unitNode.textContent = parsed.unit;
   if (rowNode?.dataset) rowNode.dataset.itemName = item.name;
-  syncQuoteItemLaborItemName(oldName, item.name);
+  syncQuoteItemLaborItemName(oldName, item.name)
+    .forEach(({ quote, line }) => saveQuoteItemToServer(line, quote, "已同步工费名称"));
   if (state.expandedLaborItemName === oldName) state.expandedLaborItemName = item.name;
   if (state.pendingLaborItemName === oldName) state.pendingLaborItemName = item.name;
   return true;
@@ -897,10 +915,6 @@ function bindEvents() {
   document.querySelectorAll(".tab").forEach((button) => {
     button.addEventListener("click", () => switchPage(button.dataset.page));
   });
-  els.saveAllBtn.addEventListener("click", () => saveState("已保存"));
-  els.exportDataBtn.addEventListener("click", exportDataFile);
-  els.importDataBtn.addEventListener("click", () => els.importDataFile.click());
-  els.importDataFile.addEventListener("change", importDataFile);
   els.printBtn.addEventListener("click", () => {
     switchPage("editor");
     setTimeout(printQuotePdf, 50);
@@ -921,12 +935,16 @@ function bindEvents() {
   window.addEventListener("beforeunload", flushServerSaveBeforeUnload);
   els.priceSearch.addEventListener("input", renderLaborLibrary);
   if (els.materialSearch) els.materialSearch.addEventListener("input", renderMaterials);
+  if (els.materialList) {
+    els.materialList.addEventListener("click", handleMaterialListClick);
+  }
   els.priceVersion.addEventListener("change", () => setQuoteField("priceVersionId", els.priceVersion.value, true));
   els.libraryPriceVersion.addEventListener("change", () => {
     state.activeVersionId = els.libraryPriceVersion.value;
     const quote = currentQuote();
     if (quote) quote.priceVersionId = state.activeVersionId;
-    saveState("已切换工费版本");
+    saveUiStatePatch({ activeVersionId: state.activeVersionId }, "已切换工费版本");
+    if (quote) saveQuoteToServer(quote, "已切换工费版本");
     renderAll();
   });
 
@@ -947,7 +965,7 @@ function bindEvents() {
   });
 }
 
-function switchPage(page) {
+function switchPage(page, options = {}) {
   state.activePage = page;
   document.querySelectorAll(".tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.page === page);
@@ -955,7 +973,7 @@ function switchPage(page) {
   document.querySelectorAll(".page").forEach((section) => {
     section.classList.toggle("active", section.id === `${page}Page`);
   });
-  saveState("已切换页面");
+  if (!options.silent) saveUiStatePatch({ activePage: state.activePage }, "已切换页面");
 }
 
 function currentQuote() {
@@ -972,6 +990,30 @@ function currentPackageEstimate(packageEntry = currentPackage()) {
   return packageEntry?.estimates?.find((estimate) => estimate.id === state.activePackageEstimateId)
     || packageEntry?.estimates?.find((estimate) => estimate.active)
     || packageEntry?.estimates?.[0];
+}
+
+function packageSectionForItem(sectionItem) {
+  for (const packageEntry of state.packages || []) {
+    const section = (packageEntry.sections || []).find((entry) => entry.items?.some((item) => item.id === sectionItem?.id));
+    if (section) return section;
+  }
+  return null;
+}
+
+function packageEstimateForGroup(group) {
+  for (const packageEntry of state.packages || []) {
+    const estimate = (packageEntry.estimates || []).find((entry) => entry.groups?.some((item) => item.id === group?.id));
+    if (estimate) return estimate;
+  }
+  return null;
+}
+
+function packageEstimateForItem(estimateItem) {
+  for (const packageEntry of state.packages || []) {
+    const estimate = (packageEntry.estimates || []).find((entry) => entry.items?.some((item) => item.id === estimateItem?.id));
+    if (estimate) return estimate;
+  }
+  return null;
 }
 
 function currentCustomer() {
@@ -1002,6 +1044,66 @@ function currentCategories() {
 
 function currentGenericMaterials() {
   return (state.genericMaterials || []).slice().sort((a, b) => a.sortOrder - b.sortOrder || String(a.name).localeCompare(String(b.name), "zh-CN"));
+}
+
+function genericMaterialCategoryName(name) {
+  return String(name || "未分类").trim() || "未分类";
+}
+
+function genericMaterialCategoryNames() {
+  const names = [];
+  const seen = new Set();
+  currentGenericMaterials().forEach((kind) => {
+    const name = genericMaterialCategoryName(kind.libraryCategory);
+    if (seen.has(name)) return;
+    seen.add(name);
+    names.push(name);
+  });
+  return names;
+}
+
+function normalizeGenericMaterialCategoryState(source = {}) {
+  const names = genericMaterialCategoryNames();
+  const sourceState = source && typeof source === "object" ? source : {};
+  const result = {};
+  names.forEach((name, index) => {
+    const entry = sourceState[name] || {};
+    const sortOrder = Number.isFinite(Number(entry.sortOrder)) ? Number(entry.sortOrder) : index;
+    const hasPersistedState = Object.prototype.hasOwnProperty.call(sourceState, name);
+    result[name] = {
+      collapsed: hasPersistedState ? Boolean(entry.collapsed) : index > 0,
+      sortOrder
+    };
+  });
+  names.sort((a, b) => result[a].sortOrder - result[b].sortOrder || a.localeCompare(b, "zh-CN"));
+  const openName = names.find((name) => !result[name].collapsed) || "";
+  names.forEach((name, index) => {
+    result[name].collapsed = openName ? name !== openName : true;
+    result[name].sortOrder = index;
+  });
+  return result;
+}
+
+function sortedGenericMaterialCategories() {
+  state.genericMaterialCategoryState = normalizeGenericMaterialCategoryState(state.genericMaterialCategoryState);
+  return genericMaterialCategoryNames().sort((a, b) => {
+    const aState = state.genericMaterialCategoryState[a] || {};
+    const bState = state.genericMaterialCategoryState[b] || {};
+    return (aState.sortOrder ?? 0) - (bState.sortOrder ?? 0) || a.localeCompare(b, "zh-CN");
+  });
+}
+
+function genericMaterialsForManagement() {
+  const categoryOrder = new Map(sortedGenericMaterialCategories().map((category, index) => [category, index]));
+  return currentGenericMaterials()
+    .map((kind, index) => ({ kind, index }))
+    .sort((a, b) => (
+      (categoryOrder.get(genericMaterialCategoryName(a.kind.libraryCategory)) ?? Number.MAX_SAFE_INTEGER)
+      - (categoryOrder.get(genericMaterialCategoryName(b.kind.libraryCategory)) ?? Number.MAX_SAFE_INTEGER)
+      || a.kind.sortOrder - b.kind.sortOrder
+      || a.index - b.index
+    ))
+    .map((entry) => entry.kind);
 }
 
 function findLaborItem(name, versionId = currentVersion()?.id) {
@@ -1142,7 +1244,7 @@ function isMaterialQuoteItem(line) {
 
 function renderAll() {
   if (state.loadBlocked) return;
-  switchPage(state.activePage);
+  switchPage(state.activePage, { silent: true });
   renderManager();
   renderSettings();
   renderLines();
@@ -1173,7 +1275,7 @@ function renderManager() {
         state.activeCustomerId = button.dataset.customerId;
         const firstQuote = state.quotes.find((quote) => quote.customerId === state.activeCustomerId);
         if (firstQuote) state.activeQuoteId = firstQuote.id;
-        saveState("已选择客户");
+        saveUiStatePatch({ activeCustomerId: state.activeCustomerId, activeQuoteId: state.activeQuoteId }, "已选择客户");
         renderAll();
       });
     });
@@ -1201,7 +1303,9 @@ function renderManager() {
   els.quoteList.querySelectorAll(".quote-card").forEach((card) => {
     card.querySelector(".open-quote").addEventListener("click", () => {
       state.activeQuoteId = card.dataset.quoteId;
-      saveState("已打开报价");
+      const quote = state.quotes.find((entry) => entry.id === state.activeQuoteId);
+      if (quote) state.activeCustomerId = quote.customerId || state.activeCustomerId;
+      saveUiStatePatch({ activeCustomerId: state.activeCustomerId, activeQuoteId: state.activeQuoteId }, "已打开报价");
       renderAll();
       switchPage("editor");
     });
@@ -1245,14 +1349,14 @@ function renderLines() {
       <section class="space-card ${space.collapsed ? "collapsed" : ""}" data-space-id="${escapeHtml(space.id)}" draggable="true">
         <div class="space-head">
           <div class="space-title">
-            <button class="space-drag" type="button" title="拖动排序" aria-label="拖动排序">⋮⋮</button>
+            <button class="space-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动项目组合排序" aria-label="点击展开或收缩，拖动项目组合排序" aria-expanded="${String(!space.collapsed)}">⋮⋮</button>
             <div class="space-icon-wrap">
               <button class="space-icon-btn" type="button" aria-label="选择项目组合图标" title="选择图标">${renderProjectGroupIcon(space.iconKey)}</button>
               <div class="space-icon-picker" hidden>
                 ${renderProjectGroupIconChoices(space.iconKey)}
               </div>
             </div>
-            <input class="space-name" type="text" aria-label="项目组合名称" title="${space.collapsed ? "点击空白处展开" : "点击空白处收起"}" value="${escapeHtml(space.name)}">
+            <input class="space-name" type="text" aria-label="项目组合名称" value="${escapeHtml(space.name)}">
             <span class="space-count">${spaceLines.length}</span>
           </div>
           <label class="space-metric">面积（平米）<input class="space-area" type="number" min="0" step="0.01" aria-label="面积（平米）" value="${space.area}"></label>
@@ -1296,7 +1400,7 @@ function renderLines() {
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         space.iconKey = button.dataset.iconKey;
-        saveState("已更新项目组合图标");
+        saveProjectGroupToServer(space, quote, "已更新项目组合图标");
         renderLines();
       });
     });
@@ -1325,7 +1429,7 @@ function renderLines() {
         return;
       }
       space.name = nextName;
-      saveState("已自动保存");
+      saveProjectGroupToServer(space, quote, "已自动保存");
       renderAll();
     });
     const areaInput = spaceNode.querySelector(".space-area");
@@ -1333,8 +1437,9 @@ function renderLines() {
       bindProjectGroupEnterFeedback(areaInput, spaceNode, true);
       areaInput.addEventListener("input", (event) => {
         space.area = toNumber(event.target.value);
-        saveState("已自动保存");
+        saveProjectGroupToServer(space, quote, "已自动保存");
         refreshRecommendedQuantities(space.id);
+        quoteItemsForProjectGroup(quote, space.id).forEach((line) => saveQuoteItemToServer(line, quote, "已同步推荐工程量"));
         renderTotalsAndPreview();
       });
     }
@@ -1343,8 +1448,9 @@ function renderLines() {
       bindProjectGroupEnterFeedback(perimeterInput, spaceNode, true);
       perimeterInput.addEventListener("input", (event) => {
         space.perimeter = toNumber(event.target.value);
-        saveState("已自动保存");
+        saveProjectGroupToServer(space, quote, "已自动保存");
         refreshRecommendedQuantities(space.id);
+        quoteItemsForProjectGroup(quote, space.id).forEach((line) => saveQuoteItemToServer(line, quote, "已同步推荐工程量"));
         renderTotalsAndPreview();
       });
     }
@@ -1353,15 +1459,12 @@ function renderLines() {
       bindProjectGroupEnterFeedback(heightInput, spaceNode, true);
       heightInput.addEventListener("input", (event) => {
         space.height = toNumber(event.target.value);
-        saveState("已自动保存");
+        saveProjectGroupToServer(space, quote, "已自动保存");
         refreshRecommendedQuantities(space.id);
+        quoteItemsForProjectGroup(quote, space.id).forEach((line) => saveQuoteItemToServer(line, quote, "已同步推荐工程量"));
         renderTotalsAndPreview();
       });
     }
-    spaceNode.querySelector(".space-head").addEventListener("click", (event) => {
-      if (event.target.closest("input, select, button")) return;
-      toggleProjectGroup(space.id);
-    });
     spaceNode.querySelector(".add-space-labor-line").addEventListener("click", () => addQuoteItem(space.id, "labor"));
     spaceNode.querySelector(".add-space-material-line").addEventListener("click", () => addQuoteItem(space.id, "material"));
     spaceNode.querySelector(".sync-space-template").addEventListener("click", () => openSyncProjectGroupTemplateDialog(space.id));
@@ -1595,7 +1698,7 @@ function bindQuoteItem(node, quote) {
   bindSuggestionSearchInput(nameInput, suggestions, {
     onInput: (value) => {
       line.engineeringName = value;
-      saveState("已自动保存");
+      saveQuoteItemToServer(line, quote, "已自动保存");
       renderSuggestions(suggestions, line, value);
       renderTotalsAndPreview();
     },
@@ -1610,7 +1713,7 @@ function bindQuoteItem(node, quote) {
   if (materialSelect) {
     materialSelect.addEventListener("change", (event) => {
       line.materialId = event.target.value;
-      saveState("已选择主材");
+      saveQuoteItemToServer(line, quote, "已选择主材");
       renderAll();
     });
   }
@@ -1631,7 +1734,7 @@ function bindQuoteItem(node, quote) {
   });
   quantityInput.addEventListener("input", (event) => {
     line.quantity = toNumber(event.target.value);
-    saveState("已自动保存");
+    saveQuoteItemToServer(line, quote, "已自动保存");
     const amountNode = node.querySelector(".amount");
     const profitNode = node.querySelector(".profit");
     if (amountNode) amountNode.textContent = formatMoney(toNumber(line.quantity) * calculateQuoteItemUnitPrice(line));
@@ -1650,7 +1753,7 @@ function bindQuoteItem(node, quote) {
   node.querySelector(".remove-btn").addEventListener("click", () => {
     confirmSimpleDelete(line.engineeringName || "工程项目", () => {
       quote.lines = quote.lines.filter((entry) => entry.id !== line.id);
-      saveState("已删除工程项目");
+      deleteQuoteItemFromServer(line.id, "已删除工程项目");
       renderAll();
     });
   });
@@ -1663,7 +1766,7 @@ function bindMaterialQuoteItem(node, quote, line) {
     onInput: (value) => {
       line.engineeringName = value;
       line.materialId = "";
-      saveState("已自动保存");
+      saveQuoteItemToServer(line, quote, "已自动保存");
       renderMaterialSuggestions(suggestions, line, value);
       renderTotalsAndPreview();
     },
@@ -1683,7 +1786,7 @@ function bindMaterialQuoteItem(node, quote, line) {
       line.materialCategory = kind?.primaryCategory || material.primaryCategory || material.category || "";
       line.engineeringName = kind?.name || line.engineeringName || material.name;
     }
-    saveState(material ? "已匹配具体主材" : "已改回抽象主材基准价");
+    saveQuoteItemToServer(line, quote, material ? "已匹配具体主材" : "已改回抽象主材基准价");
     renderLines();
     renderTotalsAndPreview();
   });
@@ -1701,7 +1804,7 @@ function bindMaterialQuoteItem(node, quote, line) {
   });
   quantityInput.addEventListener("input", (event) => {
     line.quantity = toNumber(event.target.value);
-    saveState("已自动保存");
+    saveQuoteItemToServer(line, quote, "已自动保存");
     const amountNode = node.querySelector(".amount");
     const profitNode = node.querySelector(".profit");
     if (amountNode) amountNode.textContent = formatMoney(toNumber(line.quantity) * calculateQuoteItemUnitPrice(line));
@@ -1720,7 +1823,7 @@ function bindMaterialQuoteItem(node, quote, line) {
   node.querySelector(".remove-btn").addEventListener("click", () => {
     confirmSimpleDelete(line.engineeringName || "主材项目", () => {
       quote.lines = quote.lines.filter((entry) => entry.id !== line.id);
-      saveState("已删除项目");
+      deleteQuoteItemFromServer(line.id, "已删除项目");
       renderAll();
     });
   });
@@ -1736,7 +1839,7 @@ function bindQuoteItemPartInput(node, line) {
   });
   partInput.addEventListener("input", (event) => {
     line.area = event.target.value;
-    saveState("已自动保存");
+    saveQuoteItemToServer(line, currentQuote(), "已自动保存");
     renderTotalsAndPreview();
   });
 }
@@ -1753,7 +1856,7 @@ function handleQuantityQuadClick(event, node, line, quote) {
   const profitNode = node.querySelector(".profit");
   if (amountNode) amountNode.textContent = formatMoney(toNumber(line.quantity) * calculateQuoteItemUnitPrice(line));
   if (profitNode) profitNode.textContent = formatMoney(toNumber(line.quantity) * (calculateQuoteItemUnitPrice(line) - calculateQuoteItemCostUnitPrice(line, quote.priceVersionId)));
-  saveState("已同步推荐工程量");
+  saveQuoteItemToServer(line, quote, "已同步推荐工程量");
   renderTotalsAndPreview();
   flashQuoteItemSaved(node);
 }
@@ -2400,7 +2503,8 @@ function createLaborItemFromQuoteItem(line, rawName) {
 
   version.items.push(newItem);
   selectSuggestedItem(newItem.name, line);
-  saveState("已新增工费条目");
+  saveLaborItemToServer(newItem, version.id, "已新增工费条目");
+  saveQuoteItemToServer(line, currentQuote(), "已新增工费条目");
   renderAll();
 }
 
@@ -2508,7 +2612,7 @@ function renderLaborLibrary() {
         } else {
           item[key] = event.target.value;
         }
-        saveState("已更新工费库");
+        saveLaborItemToServer(item, currentVersion()?.id, "已更新工费库");
         renderLines();
         renderTotalsAndPreview();
       });
@@ -2534,7 +2638,7 @@ function renderLaborLibrary() {
       item.categoryId = category?.id || "";
       item.category = category?.name || "";
       item.sortOrder = nextItemSortOrder(item.categoryId, item.name);
-      saveState("已更新工费库");
+      saveLaborItemToServer(item, currentVersion()?.id, "已更新工费库");
       renderLaborLibrary();
     });
     node.querySelectorAll(".price-expand").forEach((button) => {
@@ -2611,7 +2715,7 @@ function addLaborAlias(item) {
   const base = parsePriceNameUnit(item.name)?.baseName || item.name || "新别名";
   const unit = item.unit || parsePriceNameUnit(item.name)?.unit || "项";
   item.aliases = normalizeLaborAliases([...(item.aliases || []), `别名${base}/${unit}`]);
-  saveState("已新增工费别名");
+  saveLaborItemToServer(item, currentVersion()?.id, "已新增工费别名");
   renderLaborLibrary();
   requestAnimationFrame(() => {
     const rows = [...els.priceList.querySelectorAll(`.price-alias-row[data-parent-item-name="${cssEscape(item.name)}"]`)];
@@ -2629,12 +2733,13 @@ function bindLaborAliasRow(node, item) {
   if (!input || !Number.isInteger(index)) return;
   input.addEventListener("input", (event) => {
     item.aliases[index] = event.target.value;
-    saveState("已更新工费别名");
+    saveLaborItemToServer(item, currentVersion()?.id, "已更新工费别名");
   });
   input.addEventListener("keydown", blurOnEnter);
   input.addEventListener("blur", (event) => {
     const normalized = normalizeLaborAliases(item.aliases);
     item.aliases = normalized;
+    saveLaborItemToServer(item, currentVersion()?.id, "已更新工费别名");
     if (!normalized.includes(normalizeName(event.target.value))) renderLaborLibrary();
     else flashQuoteItemSaved(node);
   });
@@ -2642,11 +2747,12 @@ function bindLaborAliasRow(node, item) {
 
 function addMaterial() {
   const name = uniqueMaterialName("新主材");
-  state.materials.unshift(normalizeMaterial({ name, primaryCategory: "砖", unit: "块", sortOrder: -1 }, -1));
+  const material = normalizeMaterial({ name, primaryCategory: "砖", unit: "块", sortOrder: -1 }, -1);
+  state.materials.unshift(material);
   state.materials.forEach((material, index) => {
     material.sortOrder = index;
   });
-  saveState("已新增主材");
+  state.materials.forEach((item) => saveMaterialToServer(item, "已新增主材"));
   renderMaterials();
   const firstName = els.materialList?.querySelector(".material-name-input");
   if (firstName) {
@@ -2748,7 +2854,7 @@ function renderMaterials() {
       input.addEventListener("input", (event) => {
         material[key] = event.target.value;
         if (key === "name") syncQuoteItemMaterialName(material.id, material.name);
-        saveState("已更新主材库");
+        saveMaterialToServer(material, "已更新主材库");
         if (key === "unit") {
           renderLaborLibrary();
           renderLines();
@@ -2764,21 +2870,21 @@ function renderMaterials() {
         material.category = material.primaryCategory;
         material.unit = material.unit || kind.unit;
       }
-      saveState("已更新主材抽象项");
+      saveMaterialToServer(material, "已更新主材抽象项");
       renderMaterials();
       renderLines();
       renderTotalsAndPreview();
     });
     row.querySelector(".material-cost-input").addEventListener("input", (event) => {
       material.costUnitPrice = toNumber(event.target.value);
-      saveState("已更新主材库");
+      saveMaterialToServer(material, "已更新主材库");
       renderLines();
       renderTotalsAndPreview();
     });
     row.querySelector(".material-price-input").addEventListener("input", (event) => {
       material.quoteUnitPrice = toNumber(event.target.value);
       material.unitPrice = material.quoteUnitPrice;
-      saveState("已更新主材库");
+      saveMaterialToServer(material, "已更新主材库");
       renderLines();
       renderTotalsAndPreview();
     });
@@ -2799,35 +2905,60 @@ function renderMaterials() {
 }
 
 function renderGenericMaterialLibrary() {
-  const rows = currentGenericMaterials().map((kind) => `
-    <tr class="generic-material-row" data-kind-id="${escapeHtml(kind.id)}" draggable="true">
-      <td class="price-drag-cell"><button class="generic-material-drag price-drag" type="button" title="拖动排序" aria-label="拖动排序">⋮⋮</button></td>
-      <td><input class="generic-material" type="text" aria-label="抽象主材" value="${escapeHtml(kind.name)}"></td>
-      <td><input class="generic-material-unit" type="text" aria-label="单位" value="${escapeHtml(kind.unit)}"></td>
-      <td><input class="generic-material-cost" type="number" min="0" step="0.01" aria-label="基准成本" value="${kind.costUnitPrice}"></td>
-      <td><input class="generic-material-price" type="number" min="0" step="0.01" aria-label="基准单价" value="${kind.quoteUnitPrice}"></td>
-      <td><input class="generic-material-note" type="text" aria-label="备注" value="${escapeHtml(kind.note)}"></td>
-      <td><button class="generic-material-calculator-toggle small ghost" type="button">换算</button></td>
-      <td><button class="generic-material-delete small danger" type="button">删除</button></td>
-    </tr>
-    <tr class="generic-material-calculator-row" data-kind-id="${escapeHtml(kind.id)}" hidden>
-      <td></td>
-      <td colspan="7">
-        <div class="generic-material-calculator">
-          <strong>成本换算</strong>
-          <label>单个面积<input class="generic-material-calc-cost-area" type="number" min="0" step="0.01" placeholder="0.32" value="${kind.calcCostArea || ""}"></label>
-          <label>单个成本<input class="generic-material-calc-cost-price" type="number" min="0" step="0.01" placeholder="18" value="${kind.calcCostPrice || ""}"></label>
-          <output class="generic-material-calc-cost-result">${formatMoney(calculateGenericMaterialUnitPrice(kind.calcCostArea, kind.calcCostPrice))} / ${escapeHtml(kind.unit || "单位")}</output>
-          <button class="generic-material-fill-cost small ghost" type="button">填成本</button>
-          <strong>报价换算</strong>
-          <label>单个面积<input class="generic-material-calc-quote-area" type="number" min="0" step="0.01" placeholder="0.32" value="${kind.calcQuoteArea || ""}"></label>
-          <label>单个报价<input class="generic-material-calc-quote-price" type="number" min="0" step="0.01" placeholder="22" value="${kind.calcQuotePrice || ""}"></label>
-          <output class="generic-material-calc-quote-result">${formatMoney(calculateGenericMaterialUnitPrice(kind.calcQuoteArea, kind.calcQuotePrice))} / ${escapeHtml(kind.unit || "单位")}</output>
-          <button class="generic-material-fill-price small primary" type="button">填单价</button>
-        </div>
-      </td>
-    </tr>
-  `).join("");
+  const materialsByCategory = new Map();
+  genericMaterialsForManagement().forEach((kind) => {
+    const category = genericMaterialCategoryName(kind.libraryCategory);
+    if (!materialsByCategory.has(category)) materialsByCategory.set(category, []);
+    materialsByCategory.get(category).push(kind);
+  });
+  const rows = sortedGenericMaterialCategories().map((category) => {
+    const categoryState = state.genericMaterialCategoryState[category] || {};
+    const collapsed = Boolean(categoryState.collapsed);
+    const items = materialsByCategory.get(category) || [];
+    const itemRows = collapsed ? "" : `
+      ${renderGenericMaterialInsertRow(category, 0)}
+      ${items.map((kind, index) => `
+      <tr class="generic-material-row" data-kind-id="${escapeHtml(kind.id)}" data-category-name="${escapeHtml(category)}" draggable="true">
+        <td class="price-drag-cell"><button class="generic-material-drag price-drag" type="button" title="拖动排序" aria-label="拖动排序">⋮⋮</button></td>
+        <td><input class="generic-material-library-category" type="text" aria-label="管理分类" value="${escapeHtml(kind.libraryCategory)}" placeholder="未分类"></td>
+        <td><input class="generic-material" type="text" aria-label="抽象主材" value="${escapeHtml(kind.name)}"></td>
+        <td><input class="generic-material-unit" type="text" aria-label="单位" value="${escapeHtml(kind.unit)}"></td>
+        <td><input class="generic-material-cost" type="number" min="0" step="0.01" aria-label="基准成本" value="${kind.costUnitPrice}"></td>
+        <td><input class="generic-material-price" type="number" min="0" step="0.01" aria-label="基准单价" value="${kind.quoteUnitPrice}"></td>
+        <td><input class="generic-material-note" type="text" aria-label="备注" value="${escapeHtml(kind.note)}"></td>
+        <td><button class="generic-material-calculator-toggle small ghost" type="button">换算</button></td>
+        <td><button class="generic-material-delete small danger" type="button">删除</button></td>
+      </tr>
+      <tr class="generic-material-calculator-row" data-kind-id="${escapeHtml(kind.id)}" hidden>
+        <td></td>
+        <td colspan="8">
+          <div class="generic-material-calculator">
+            <strong>成本换算</strong>
+            <label>单个面积<input class="generic-material-calc-cost-area" type="number" min="0" step="0.01" placeholder="0.32" value="${kind.calcCostArea || ""}"></label>
+            <label>单个成本<input class="generic-material-calc-cost-price" type="number" min="0" step="0.01" placeholder="18" value="${kind.calcCostPrice || ""}"></label>
+            <output class="generic-material-calc-cost-result">${formatMoney(calculateGenericMaterialUnitPrice(kind.calcCostArea, kind.calcCostPrice))} / ${escapeHtml(kind.unit || "单位")}</output>
+            <button class="generic-material-fill-cost small primary" type="button">填成本</button>
+            <strong>报价换算</strong>
+            <label>单个面积<input class="generic-material-calc-quote-area" type="number" min="0" step="0.01" placeholder="0.32" value="${kind.calcQuoteArea || ""}"></label>
+            <label>单个报价<input class="generic-material-calc-quote-price" type="number" min="0" step="0.01" placeholder="22" value="${kind.calcQuotePrice || ""}"></label>
+            <output class="generic-material-calc-quote-result">${formatMoney(calculateGenericMaterialUnitPrice(kind.calcQuoteArea, kind.calcQuotePrice))} / ${escapeHtml(kind.unit || "单位")}</output>
+            <button class="generic-material-fill-price small primary" type="button">填单价</button>
+          </div>
+        </td>
+      </tr>
+      ${renderGenericMaterialInsertRow(category, index + 1)}`).join("")}`;
+    return `
+      <tr class="generic-material-group-row ${collapsed ? "collapsed" : ""}" data-category-name="${escapeHtml(category)}" draggable="true">
+        <td colspan="9">
+          <div class="generic-material-category-head">
+            <button class="generic-material-category-drag price-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动分类排序" aria-label="点击展开或收缩，拖动分类排序" aria-expanded="${String(!collapsed)}">⋮⋮</button>
+            <strong>${escapeHtml(category)}</strong>
+            <span class="generic-material-category-count">${items.length} 项</span>
+          </div>
+        </td>
+      </tr>
+      ${itemRows}`;
+  }).join("");
   const collapsed = state.genericMaterialLibraryCollapsed;
   return `
     <section class="generic-material-panel ${collapsed ? "collapsed" : ""}">
@@ -2842,6 +2973,7 @@ function renderGenericMaterialLibrary() {
         <thead>
           <tr>
             <th>排序</th>
+            <th>管理分类</th>
             <th>名称</th>
             <th>单位</th>
             <th>基准成本</th>
@@ -2854,6 +2986,18 @@ function renderGenericMaterialLibrary() {
         <tbody>${rows}</tbody>
       </table>
     </section>
+  `;
+}
+
+function renderGenericMaterialInsertRow(category, position) {
+  return `
+    <tr class="generic-material-insert-row" data-category-name="${escapeHtml(category)}" data-position="${position}" aria-label="在这里添加抽象主材">
+      <td colspan="9">
+        <div class="generic-material-insert-slot">
+          <button class="insert-generic-material small ghost" type="button">添加抽象主材</button>
+        </div>
+      </td>
+    </tr>
   `;
 }
 
@@ -2904,7 +3048,7 @@ function renderMaterialCalculator(material) {
       <label>单个面积<input class="material-calc-cost-area" type="number" min="0" step="0.01" placeholder="0.32" value="${material.calcCostArea || ""}"></label>
       <label>单个成本<input class="material-calc-cost-price" type="number" min="0" step="0.01" placeholder="18" value="${material.calcCostPrice || ""}"></label>
       <output class="material-calc-cost-result">${formatMoney(calculateGenericMaterialUnitPrice(material.calcCostArea, material.calcCostPrice))} / ${escapeHtml(targetUnit)}</output>
-      <button class="material-fill-cost small ghost" type="button">填成本</button>
+      <button class="material-fill-cost small primary" type="button">填成本</button>
       <strong>报价换算</strong>
       <label>单个面积<input class="material-calc-quote-area" type="number" min="0" step="0.01" placeholder="0.32" value="${material.calcQuoteArea || ""}"></label>
       <label>单个报价<input class="material-calc-quote-price" type="number" min="0" step="0.01" placeholder="22" value="${material.calcQuotePrice || ""}"></label>
@@ -2924,27 +3068,45 @@ function bindGenericMaterialLibrary() {
     event.stopPropagation();
     addGenericMaterial();
   });
+  els.materialList.querySelectorAll(".generic-material-insert-row").forEach((row) => {
+    row.querySelector(".insert-generic-material")?.addEventListener("click", () => {
+      addGenericMaterialAt(row.dataset.categoryName, Number(row.dataset.position || 0));
+    });
+  });
   els.materialList.querySelectorAll(".generic-material-row").forEach((row) => {
     const kind = findGenericMaterial(row.dataset.kindId);
     if (!kind) return;
     [
+      ["generic-material-library-category", "libraryCategory"],
       ["generic-material", "name"],
       ["generic-material-unit", "unit"],
       ["generic-material-cost", "costUnitPrice", "number"],
       ["generic-material-price", "quoteUnitPrice", "number"],
       ["generic-material-note", "note"]
     ].forEach(([className, key, mode]) => {
-      row.querySelector(`.${className}`)?.addEventListener("input", (event) => {
-        kind[key] = mode === "number" ? toNumber(event.target.value) : event.target.value;
+      const input = row.querySelector(`.${className}`);
+      const updateKindFromInput = (event) => {
+        kind[key] = mode === "number" ? toNumber(event.target.value) : (key === "libraryCategory" ? genericMaterialCategoryName(event.target.value) : event.target.value);
         if (key === "quoteUnitPrice") kind.unitPrice = kind.quoteUnitPrice;
-        saveState("已更新抽象主材");
-        renderLines();
-        renderTotalsAndPreview();
+      };
+      input?.addEventListener("input", (event) => {
+        updateKindFromInput(event);
+        saveMaterialKindToServer(kind, "已更新抽象主材");
+        if (key !== "libraryCategory") {
+          renderLines();
+          renderTotalsAndPreview();
+        }
+      });
+      input?.addEventListener("change", async (event) => {
+        updateKindFromInput(event);
+        await saveMaterialKindToServerNow(kind, "已更新抽象主材");
       });
     });
+    row.querySelector(".generic-material-library-category")?.addEventListener("change", renderMaterials);
     bindGenericMaterialCalculator(row, kind);
     row.querySelector(".generic-material-delete")?.addEventListener("click", () => deleteGenericMaterial(kind));
   });
+  bindGenericMaterialCategoryDragAndDrop();
   bindGenericMaterialDragAndDrop();
 }
 
@@ -2958,6 +3120,22 @@ function bindSupplierMaterialLibrary() {
     event.stopPropagation();
     addMaterial();
   });
+}
+
+function handleMaterialListClick(event) {
+  const genericFillButton = event.target.closest(".generic-material-fill-cost, .generic-material-fill-price");
+  if (!genericFillButton) return;
+  const calculatorRow = genericFillButton.closest(".generic-material-calculator-row");
+  const kind = findGenericMaterial(calculatorRow?.dataset.kindId);
+  const row = kind ? els.materialList.querySelector(`.generic-material-row[data-kind-id="${cssEscape(kind.id)}"]`) : null;
+  if (!kind || !row) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (genericFillButton.classList.contains("generic-material-fill-cost")) {
+    fillGenericMaterialCost(row, calculatorRow, kind);
+  } else {
+    fillGenericMaterialPrice(row, calculatorRow, kind);
+  }
 }
 
 function bindMaterialCalculator(row, material) {
@@ -2974,7 +3152,7 @@ function bindMaterialCalculator(row, material) {
     const priceInput = type === "cost" ? costPriceInput : quotePriceInput;
     const result = type === "cost" ? costResult : quoteResult;
     if (!result) return 0;
-    const unitPrice = calculateGenericMaterialUnitPrice(areaInput?.value, priceInput?.value);
+    const unitPrice = calculateGenericMaterialUnitPrice(numberInputValue(areaInput), numberInputValue(priceInput));
     result.textContent = `${formatMoney(unitPrice)} / ${materialTargetUnit(material)}`;
     return unitPrice;
   };
@@ -2982,12 +3160,14 @@ function bindMaterialCalculator(row, material) {
     input?.addEventListener("input", () => {
       material[key] = toNumber(input.value);
       updateResult(type);
-      saveState("已更新供货商主材换算依据");
+      saveMaterialToServer(material, "已更新供货商主材换算依据");
     });
   };
   toggle?.addEventListener("click", () => {
     if (!calculatorRow) return;
-    calculatorRow.hidden = !calculatorRow.hidden;
+    const willOpen = calculatorRow.hidden;
+    if (willOpen) collapseOtherMaterialCalculators(calculatorRow);
+    calculatorRow.hidden = !willOpen;
     toggle.textContent = calculatorRow.hidden ? "换算" : "收起";
     if (!calculatorRow.hidden) {
       updateResult("cost");
@@ -3000,23 +3180,79 @@ function bindMaterialCalculator(row, material) {
   saveCalculatorInput("calcCostPrice", costPriceInput, "cost");
   saveCalculatorInput("calcQuoteArea", quoteAreaInput, "quote");
   saveCalculatorInput("calcQuotePrice", quotePriceInput, "quote");
-  calculatorRow?.querySelector(".material-fill-cost")?.addEventListener("click", () => {
+  calculatorRow?.querySelector(".material-fill-cost")?.addEventListener("click", async () => {
+    material.calcCostArea = numberInputValue(costAreaInput);
+    material.calcCostPrice = numberInputValue(costPriceInput);
     const unitPrice = updateResult("cost");
     material.costUnitPrice = unitPrice;
     row.querySelector(".material-cost-input").value = unitPrice;
-    saveState("已填入供货商主材成本单价");
+    await saveMaterialToServerNow(material, "已填入供货商主材成本单价");
     renderLines();
     renderTotalsAndPreview();
   });
-  calculatorRow?.querySelector(".material-fill-price")?.addEventListener("click", () => {
+  calculatorRow?.querySelector(".material-fill-price")?.addEventListener("click", async () => {
+    material.calcQuoteArea = numberInputValue(quoteAreaInput);
+    material.calcQuotePrice = numberInputValue(quotePriceInput);
     const unitPrice = updateResult("quote");
     material.quoteUnitPrice = unitPrice;
     material.unitPrice = unitPrice;
     row.querySelector(".material-price-input").value = unitPrice;
-    saveState("已填入供货商主材单价");
+    await saveMaterialToServerNow(material, "已填入供货商主材单价");
     renderLines();
     renderTotalsAndPreview();
   });
+}
+
+function numberInputValue(input) {
+  const value = String(input?.value ?? "").trim();
+  return toNumber(value || input?.placeholder);
+}
+
+function collapseOtherMaterialCalculators(activeRow) {
+  els.materialList?.querySelectorAll(".generic-material-calculator-row, .material-calculator-row").forEach((row) => {
+    if (row === activeRow) return;
+    row.hidden = true;
+  });
+  els.materialList?.querySelectorAll(".generic-material-calculator-toggle, .material-calculator-toggle").forEach((button) => {
+    const parentRow = button.closest("tr");
+    const targetRow = parentRow?.classList.contains("generic-material-row")
+      ? els.materialList.querySelector(`.generic-material-calculator-row[data-kind-id="${cssEscape(parentRow.dataset.kindId)}"]`)
+      : els.materialList.querySelector(`.material-calculator-row[data-material-id="${cssEscape(parentRow?.dataset.materialId)}"]`);
+    button.textContent = targetRow && !targetRow.hidden ? "收起" : "换算";
+  });
+}
+
+async function fillGenericMaterialCost(row, calculatorRow, kind) {
+  const costAreaInput = calculatorRow?.querySelector(".generic-material-calc-cost-area");
+  const costPriceInput = calculatorRow?.querySelector(".generic-material-calc-cost-price");
+  const costResult = calculatorRow?.querySelector(".generic-material-calc-cost-result");
+  kind.calcCostArea = numberInputValue(costAreaInput);
+  kind.calcCostPrice = numberInputValue(costPriceInput);
+  const unitPrice = calculateGenericMaterialUnitPrice(kind.calcCostArea, kind.calcCostPrice);
+  if (costResult) costResult.textContent = `${formatMoney(unitPrice)} / ${kind.unit || "单位"}`;
+  kind.costUnitPrice = unitPrice;
+  const costInput = row.querySelector(".generic-material-cost");
+  if (costInput) costInput.value = unitPrice;
+  await saveMaterialKindToServerNow(kind, "已填入抽象主材基准成本");
+  renderLines();
+  renderTotalsAndPreview();
+}
+
+async function fillGenericMaterialPrice(row, calculatorRow, kind) {
+  const quoteAreaInput = calculatorRow?.querySelector(".generic-material-calc-quote-area");
+  const quotePriceInput = calculatorRow?.querySelector(".generic-material-calc-quote-price");
+  const quoteResult = calculatorRow?.querySelector(".generic-material-calc-quote-result");
+  kind.calcQuoteArea = numberInputValue(quoteAreaInput);
+  kind.calcQuotePrice = numberInputValue(quotePriceInput);
+  const unitPrice = calculateGenericMaterialUnitPrice(kind.calcQuoteArea, kind.calcQuotePrice);
+  if (quoteResult) quoteResult.textContent = `${formatMoney(unitPrice)} / ${kind.unit || "单位"}`;
+  kind.quoteUnitPrice = unitPrice;
+  kind.unitPrice = unitPrice;
+  const priceInput = row.querySelector(".generic-material-price");
+  if (priceInput) priceInput.value = unitPrice;
+  await saveMaterialKindToServerNow(kind, "已填入抽象主材基准单价");
+  renderLines();
+  renderTotalsAndPreview();
 }
 
 function bindGenericMaterialCalculator(row, kind) {
@@ -3033,7 +3269,7 @@ function bindGenericMaterialCalculator(row, kind) {
     const priceInput = type === "cost" ? costPriceInput : quotePriceInput;
     const result = type === "cost" ? costResult : quoteResult;
     if (!result) return 0;
-    const unitPrice = calculateGenericMaterialUnitPrice(areaInput?.value, priceInput?.value);
+    const unitPrice = calculateGenericMaterialUnitPrice(numberInputValue(areaInput), numberInputValue(priceInput));
     result.textContent = `${formatMoney(unitPrice)} / ${kind.unit || "单位"}`;
     return unitPrice;
   };
@@ -3041,12 +3277,14 @@ function bindGenericMaterialCalculator(row, kind) {
     input?.addEventListener("input", () => {
       kind[key] = toNumber(input.value);
       updateResult(type);
-      saveState("已更新抽象主材换算依据");
+      saveMaterialKindToServer(kind, "已更新抽象主材换算依据");
     });
   };
   toggle?.addEventListener("click", () => {
     if (!calculatorRow) return;
-    calculatorRow.hidden = !calculatorRow.hidden;
+    const willOpen = calculatorRow.hidden;
+    if (willOpen) collapseOtherMaterialCalculators(calculatorRow);
+    calculatorRow.hidden = !willOpen;
     toggle.textContent = calculatorRow.hidden ? "换算" : "收起";
     if (!calculatorRow.hidden) {
       updateResult("cost");
@@ -3059,36 +3297,47 @@ function bindGenericMaterialCalculator(row, kind) {
   saveCalculatorInput("calcCostPrice", costPriceInput, "cost");
   saveCalculatorInput("calcQuoteArea", quoteAreaInput, "quote");
   saveCalculatorInput("calcQuotePrice", quotePriceInput, "quote");
-  calculatorRow?.querySelector(".generic-material-fill-cost")?.addEventListener("click", () => {
-    const unitPrice = updateResult("cost");
-    kind.costUnitPrice = unitPrice;
-    row.querySelector(".generic-material-cost").value = unitPrice;
-    saveState("已填入抽象主材基准成本");
-    renderLines();
-    renderTotalsAndPreview();
+  calculatorRow?.querySelector(".generic-material-fill-cost")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await fillGenericMaterialCost(row, calculatorRow, kind);
   });
-  calculatorRow?.querySelector(".generic-material-fill-price")?.addEventListener("click", () => {
-    const unitPrice = updateResult("quote");
-    kind.quoteUnitPrice = unitPrice;
-    kind.unitPrice = unitPrice;
-    row.querySelector(".generic-material-price").value = unitPrice;
-    saveState("已填入抽象主材基准单价");
-    renderLines();
-    renderTotalsAndPreview();
+  calculatorRow?.querySelector(".generic-material-fill-price")?.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    await fillGenericMaterialPrice(row, calculatorRow, kind);
   });
 }
 
 function toggleGenericMaterialLibrary() {
   state.genericMaterialLibraryCollapsed = !state.genericMaterialLibraryCollapsed;
   if (!state.genericMaterialLibraryCollapsed) state.supplierMaterialLibraryCollapsed = true;
-  saveState(state.genericMaterialLibraryCollapsed ? "已收缩抽象主材" : "已展开抽象主材");
+  saveUiStatePatch({
+    genericMaterialLibraryCollapsed: state.genericMaterialLibraryCollapsed,
+    supplierMaterialLibraryCollapsed: state.supplierMaterialLibraryCollapsed
+  }, state.genericMaterialLibraryCollapsed ? "已收缩抽象主材" : "已展开抽象主材");
+  renderMaterials();
+}
+
+function toggleGenericMaterialCategory(categoryName) {
+  const targetName = genericMaterialCategoryName(categoryName);
+  state.genericMaterialCategoryState = normalizeGenericMaterialCategoryState(state.genericMaterialCategoryState);
+  const isOpen = state.genericMaterialCategoryState[targetName] && !state.genericMaterialCategoryState[targetName].collapsed;
+  Object.keys(state.genericMaterialCategoryState).forEach((name) => {
+    state.genericMaterialCategoryState[name].collapsed = true;
+  });
+  if (!isOpen && state.genericMaterialCategoryState[targetName]) {
+    state.genericMaterialCategoryState[targetName].collapsed = false;
+  }
+  saveUiStatePatch({ genericMaterialCategoryState: state.genericMaterialCategoryState }, isOpen ? "已收缩抽象主材分类" : "已展开抽象主材分类");
   renderMaterials();
 }
 
 function toggleSupplierMaterialLibrary() {
   state.supplierMaterialLibraryCollapsed = !state.supplierMaterialLibraryCollapsed;
   if (!state.supplierMaterialLibraryCollapsed) state.genericMaterialLibraryCollapsed = true;
-  saveState(state.supplierMaterialLibraryCollapsed ? "已收缩供货商主材" : "已展开供货商主材");
+  saveUiStatePatch({
+    genericMaterialLibraryCollapsed: state.genericMaterialLibraryCollapsed,
+    supplierMaterialLibraryCollapsed: state.supplierMaterialLibraryCollapsed
+  }, state.supplierMaterialLibraryCollapsed ? "已收缩供货商主材" : "已展开供货商主材");
   renderMaterials();
 }
 
@@ -3097,6 +3346,7 @@ function addGenericMaterial() {
   state.genericMaterials.unshift(normalizeGenericMaterial({
     id: makeGenericMaterialId(name),
     name,
+    libraryCategory: "未分类",
     primaryCategory: "其他",
     unit: "项",
     costUnitPrice: 0,
@@ -3104,7 +3354,38 @@ function addGenericMaterial() {
     sortOrder: -1
   }, -1));
   state.genericMaterials.forEach((kind, index) => { kind.sortOrder = index; });
-  saveState("已新增抽象主材");
+  state.genericMaterials.forEach((kind) => saveMaterialKindToServer(kind, "已新增抽象主材"));
+  renderMaterials();
+}
+
+function addGenericMaterialAt(categoryName = "未分类", position = 0) {
+  const category = genericMaterialCategoryName(categoryName);
+  const categoryItems = genericMaterialsForManagement().filter((kind) => genericMaterialCategoryName(kind.libraryCategory) === category);
+  const insertPosition = normalizeInsertPosition(position, categoryItems.length);
+  const name = uniqueGenericMaterial("新抽象主材");
+  const newKind = normalizeGenericMaterial({
+    id: makeGenericMaterialId(name),
+    name,
+    libraryCategory: category,
+    primaryCategory: "其他",
+    unit: "项",
+    costUnitPrice: 0,
+    quoteUnitPrice: 0,
+    sortOrder: insertPosition
+  }, insertPosition);
+  state.genericMaterials.push(newKind);
+  insertItemAndRenumberSortOrder(categoryItems, newKind, insertPosition).forEach((kind, index) => {
+    const target = findGenericMaterial(kind.id);
+    if (target) target.sortOrder = index;
+  });
+  state.genericMaterialCategoryState = normalizeGenericMaterialCategoryState(state.genericMaterialCategoryState);
+  if (state.genericMaterialCategoryState[category]) {
+    Object.keys(state.genericMaterialCategoryState).forEach((name) => {
+      state.genericMaterialCategoryState[name].collapsed = name !== category;
+    });
+  }
+  insertItemAndRenumberSortOrder(categoryItems, newKind, insertPosition).forEach((kind) => saveMaterialKindToServer(kind, "已新增抽象主材"));
+  saveUiStatePatch({ genericMaterialCategoryState: state.genericMaterialCategoryState }, "已新增抽象主材");
   renderMaterials();
 }
 
@@ -3128,7 +3409,8 @@ function deleteGenericMaterial(kind) {
   confirmSimpleDelete(name || "抽象主材", () => {
     state.genericMaterials = state.genericMaterials.filter((item) => item.id !== kind.id);
     state.genericMaterials.forEach((item, index) => { item.sortOrder = index; });
-    saveState("已删除抽象主材");
+    deleteMaterialKindFromServer(kind.id, "已删除抽象主材");
+    state.genericMaterials.forEach((item) => saveMaterialKindToServer(item, "已删除抽象主材"));
     renderMaterials();
   });
 }
@@ -3144,7 +3426,8 @@ function deleteMaterial(material) {
     state.materials.forEach((item, index) => {
       item.sortOrder = index;
     });
-    saveState("已删除主材");
+    deleteMaterialFromServer(material.id, "已删除主材");
+    state.materials.forEach((item) => saveMaterialToServer(item, "已删除主材"));
     renderMaterials();
   });
 }
@@ -3166,7 +3449,7 @@ function addTemplate() {
     items: []
   }, -1));
   state.templates.forEach((template, index) => { template.sortOrder = index; });
-  saveState("已添加模板");
+  state.templates.forEach((template) => saveTemplateToServer(template, "已添加模板"));
   renderTemplates();
 }
 
@@ -3174,7 +3457,8 @@ function deleteTemplate(template) {
   confirmSimpleDelete(template.name || "模板", () => {
     state.templates = state.templates.filter((item) => item.id !== template.id);
     state.templates.forEach((item, index) => { item.sortOrder = index; });
-    saveState("已删除模板");
+    deleteTemplateFromServer(template.id, "已删除模板");
+    state.templates.forEach((item) => saveTemplateToServer(item, "已删除模板"));
     renderTemplates();
   });
 }
@@ -3200,7 +3484,8 @@ function duplicateTemplate(template) {
   sortedTemplates.splice(insertIndex, 0, copiedTemplate);
   sortedTemplates.forEach((entry, index) => { entry.sortOrder = index; });
   state.templates = sortedTemplates;
-  saveState("已复制模板");
+  state.templates.forEach((entry) => saveTemplateToServer(entry, "已复制模板"));
+  copiedTemplate.items.forEach((item) => saveTemplateItemToServer(item, copiedTemplate, "已复制模板"));
   renderTemplates();
 }
 
@@ -3231,7 +3516,8 @@ function addTemplateItem(template, sourceType = "labor", position = null) {
   }
   template.items = insertItemAndRenumberSortOrder(currentItems, item, position);
   markTemplateManualOrder(template);
-  saveState(sourceType === "material" ? "已添加主材模板项" : "已添加工费模板项");
+  saveTemplateToServer(template, sourceType === "material" ? "已添加主材模板项" : "已添加工费模板项");
+  template.items.forEach((entry) => saveTemplateItemToServer(entry, template, sourceType === "material" ? "已添加主材模板项" : "已添加工费模板项"));
   renderTemplates();
 }
 
@@ -3240,7 +3526,8 @@ function deleteTemplateItem(template, itemId) {
   confirmSimpleDelete(item?.itemName || item?.materialCategory || "模板项目", () => {
     template.items = template.items.filter((entry) => entry.id !== itemId);
     template.items.forEach((entry, index) => { entry.sortOrder = index; });
-    saveState("已删除模板项");
+    deleteTemplateItemFromServer(itemId, "已删除模板项");
+    template.items.forEach((entry) => saveTemplateItemToServer(entry, template, "已删除模板项"));
     renderTemplates();
   });
 }
@@ -3340,7 +3627,7 @@ function renderTemplates() {
   els.templateList.innerHTML = templates.map((template) => `
     <section class="template-card ${template.collapsed ? "collapsed" : ""}" data-template-id="${escapeHtml(template.id)}" draggable="true">
       <div class="template-head">
-        <button class="template-drag" type="button" title="拖动排序" aria-label="拖动排序">↕</button>
+        <button class="template-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动模板排序" aria-label="点击展开或收缩，拖动模板排序" aria-expanded="${String(!template.collapsed)}">⋮⋮</button>
         <div class="space-icon-wrap">
           <button class="space-icon-btn template-icon-btn" type="button" aria-label="选择模板图标" title="选择图标">${renderProjectGroupIcon(template.iconKey)}</button>
           <div class="space-icon-picker" hidden>
@@ -3470,10 +3757,6 @@ function renderTemplates() {
       card.classList.remove("drag-over");
       reorderTemplate(draggedId, template.id);
     });
-    card.querySelector(".template-head").addEventListener("click", (event) => {
-      if (event.target.closest("button, input, select, textarea, .space-icon-picker")) return;
-      toggleTemplate(template);
-    });
     const iconButton = card.querySelector(".template-icon-btn");
     const iconPicker = card.querySelector(".space-icon-picker");
     iconButton.addEventListener("click", (event) => {
@@ -3486,11 +3769,11 @@ function renderTemplates() {
     iconPicker.querySelectorAll(".space-icon-choice").forEach((button) => {
       button.addEventListener("click", () => {
         template.iconKey = button.dataset.iconKey;
-        saveState("已更新模板图标");
+        saveTemplateToServer(template, "已更新模板图标");
         renderTemplates();
       });
     });
-    bindEditableObjectField(card, ".template-name-input", template, "name", { message: "已更新模板名称" });
+    bindEditableObjectField(card, ".template-name-input", template, "name", { message: "已更新模板名称", save: (target, message) => saveTemplateToServer(target, message) });
     card.querySelector(".add-template-labor").addEventListener("click", () => {
       state.templates.forEach((entry) => { entry.collapsed = entry.id !== template.id; });
       template.collapsed = false;
@@ -3524,7 +3807,8 @@ function renderTemplates() {
           item.materialId = "";
         }
         markTemplateManualOrder(template);
-        saveState("已切换模板项来源");
+        saveTemplateToServer(template, "已切换模板项来源");
+        saveTemplateItemToServer(item, template, "已切换模板项来源");
         renderTemplates();
       });
       const laborInput = row.querySelector(".template-labor-input");
@@ -3534,7 +3818,8 @@ function renderTemplates() {
           onInput: (value) => {
             item.itemName = value;
             markTemplateManualOrder(template);
-            saveState("已更新模板工费项");
+            saveTemplateToServer(template, "已更新模板工费项");
+            saveTemplateItemToServer(item, template, "已更新模板工费项");
             renderTemplateLaborSuggestions(suggestions, item, value);
           },
           onFocus: (value) => renderTemplateLaborSuggestions(suggestions, item, value),
@@ -3564,15 +3849,16 @@ function renderTemplates() {
             item.materialId = "";
             item.materialCategory = "";
             markTemplateManualOrder(template);
-            saveState("已更新模板主材");
+            saveTemplateToServer(template, "已更新模板主材");
+            saveTemplateItemToServer(item, template, "已更新模板主材");
             renderTemplateMaterialSuggestions(suggestions, item, value);
           },
           onFocus: (value) => renderTemplateMaterialSuggestions(suggestions, item, value),
           onKeydown: (event) => handleTemplateMaterialSuggestionKeys(event, suggestions, item)
         });
       }
-      bindEditableObjectField(row, ".template-area", item, "area", { message: "已更新模板部位" });
-      bindEditableObjectField(row, ".template-quantity", item, "quantity", { mode: "number", message: "已更新模板工程量" });
+      bindEditableObjectField(row, ".template-area", item, "area", { message: "已更新模板部位", save: (target, message) => saveTemplateItemToServer(target, template, message) });
+      bindEditableObjectField(row, ".template-quantity", item, "quantity", { mode: "number", message: "已更新模板工程量", save: (target, message) => saveTemplateItemToServer(target, template, message) });
       row.querySelector(".delete-template-item").addEventListener("click", () => deleteTemplateItem(template, item.id));
     });
   });
@@ -3582,7 +3868,7 @@ function toggleTemplate(template) {
   const willOpen = template.collapsed;
   state.templates.forEach((entry) => { entry.collapsed = true; });
   template.collapsed = !willOpen;
-  saveState(template.collapsed ? "已收起模板" : "已展开模板");
+  state.templates.forEach((entry) => saveTemplateToServer(entry, template.collapsed ? "已收起模板" : "已展开模板"));
   renderTemplates();
 }
 
@@ -3596,7 +3882,7 @@ function reorderTemplate(draggedId, targetId) {
   templates.splice(targetIndex, 0, dragged);
   templates.forEach((template, index) => { template.sortOrder = index; });
   state.templates = templates;
-  saveState("已调整模板顺序");
+  state.templates.forEach((template) => saveTemplateToServer(template, "已调整模板顺序"));
   renderTemplates();
 }
 
@@ -3651,8 +3937,10 @@ function activateTemplateLaborSuggestion(button, templateItem) {
   if (!button) return;
   if (button.dataset.itemName) {
     templateItem.itemName = button.dataset.itemName;
-    markTemplateManualOrder(templateForItem(templateItem));
-    saveState("已选择模板工费项");
+    const template = templateForItem(templateItem);
+    markTemplateManualOrder(template);
+    saveTemplateToServer(template, "已选择模板工费项");
+    saveTemplateItemToServer(templateItem, template, "已选择模板工费项");
     renderTemplates();
     return;
   }
@@ -3670,8 +3958,10 @@ function createLaborItemFromTemplate(templateItem, rawName) {
   const existing = version.items.find((item) => normalizeName(item.name) === name);
   if (existing) {
     templateItem.itemName = existing.name;
-    markTemplateManualOrder(templateForItem(templateItem));
-    saveState("已选择模板工费项");
+    const template = templateForItem(templateItem);
+    markTemplateManualOrder(template);
+    saveTemplateToServer(template, "已选择模板工费项");
+    saveTemplateItemToServer(templateItem, template, "已选择模板工费项");
     renderTemplates();
     return;
   }
@@ -3683,8 +3973,10 @@ function createLaborItemFromTemplate(templateItem, rawName) {
   const existingWithUnit = version.items.find((item) => normalizeName(item.name) === normalizeName(itemName));
   if (existingWithUnit) {
     templateItem.itemName = existingWithUnit.name;
-    markTemplateManualOrder(templateForItem(templateItem));
-    saveState("已选择模板工费项");
+    const template = templateForItem(templateItem);
+    markTemplateManualOrder(template);
+    saveTemplateToServer(template, "已选择模板工费项");
+    saveTemplateItemToServer(templateItem, template, "已选择模板工费项");
     renderTemplates();
     return;
   }
@@ -3707,8 +3999,11 @@ function createLaborItemFromTemplate(templateItem, rawName) {
   }, version.items.length);
   version.items.push(newItem);
   templateItem.itemName = newItem.name;
-  markTemplateManualOrder(templateForItem(templateItem));
-  saveState("已新增模板工费项");
+  const template = templateForItem(templateItem);
+  markTemplateManualOrder(template);
+  saveLaborItemToServer(newItem, version.id, "已新增模板工费项");
+  saveTemplateToServer(template, "已新增模板工费项");
+  saveTemplateItemToServer(templateItem, template, "已新增模板工费项");
   renderAll();
 }
 
@@ -3744,8 +4039,10 @@ function activateTemplateMaterialSuggestion(button, templateItem) {
     templateItem.materialKindId = kind.id;
     templateItem.materialId = "";
     templateItem.materialCategory = kind.primaryCategory || "";
-    markTemplateManualOrder(templateForItem(templateItem));
-    saveState("已选择模板抽象主材");
+    const template = templateForItem(templateItem);
+    markTemplateManualOrder(template);
+    saveTemplateToServer(template, "已选择模板抽象主材");
+    saveTemplateItemToServer(templateItem, template, "已选择模板抽象主材");
     renderTemplates();
     return;
   }
@@ -3755,8 +4052,10 @@ function activateTemplateMaterialSuggestion(button, templateItem) {
   templateItem.materialKindId = kind?.id || templateItem.materialKindId || "";
   templateItem.materialId = material.id;
   templateItem.materialCategory = kind?.primaryCategory || material.primaryCategory || templateItem.materialCategory || "";
-  markTemplateManualOrder(templateForItem(templateItem));
-  saveState("已选择模板具体主材");
+  const template = templateForItem(templateItem);
+  markTemplateManualOrder(template);
+  saveTemplateToServer(template, "已选择模板具体主材");
+  saveTemplateItemToServer(templateItem, template, "已选择模板具体主材");
   renderTemplates();
 }
 
@@ -3797,8 +4096,8 @@ function bindLaborDetailInputs(node, item) {
     input.addEventListener("input", (event) => {
       item[key] = mode === "percent" ? parsePercentInput(event.target.value) : toNumber(event.target.value);
       updateTotals();
-      saveState("已更新工费库");
-      syncQuoteItemLaborParts(item);
+      saveLaborItemToServer(item, currentVersion()?.id, "已更新工费库");
+      syncQuoteItemLaborParts(item).forEach(({ quote, line }) => saveQuoteItemToServer(line, quote, "已同步工费报价"));
       renderLines();
       renderTotalsAndPreview();
     });
@@ -3808,7 +4107,7 @@ function bindLaborDetailInputs(node, item) {
   if (descriptionInput) {
     descriptionInput.addEventListener("input", (event) => {
       item.description = event.target.value;
-      saveState("已更新工费库");
+      saveLaborItemToServer(item, currentVersion()?.id, "已更新工费库");
       renderTotalsAndPreview();
     });
   }
@@ -3817,7 +4116,7 @@ function bindLaborDetailInputs(node, item) {
   if (formulaInput) {
     formulaInput.addEventListener("input", (event) => {
       item.quantityFormula = event.target.value;
-      saveState("已更新工费库");
+      saveLaborItemToServer(item, currentVersion()?.id, "已更新工费库");
       renderLines();
       renderTotalsAndPreview();
     });
@@ -3827,7 +4126,7 @@ function bindLaborDetailInputs(node, item) {
   if (roundDownInput) {
     roundDownInput.addEventListener("change", (event) => {
       item.quantityRoundDown = event.target.checked;
-      saveState("已更新推荐量取整方式");
+      saveLaborItemToServer(item, currentVersion()?.id, "已更新推荐量取整方式");
       renderLines();
       renderTotalsAndPreview();
     });
@@ -3841,7 +4140,7 @@ function bindLaborDetailInputs(node, item) {
         event.target.value = item.unit || parsePriceNameUnit(item.name)?.unit || "";
         return;
       }
-      saveState("已更新工费库");
+      saveLaborItemToServer(item, currentVersion()?.id, "已更新工费库");
       renderLaborLibrary();
       renderLines();
       renderTotalsAndPreview();
@@ -3892,15 +4191,18 @@ function renderCategoryLibrary() {
       category.name = nextName;
       state.versions.forEach((version) => {
         (version.items || []).forEach((item) => {
-          if (item.categoryId === category.id) item.category = nextName;
+          if (item.categoryId === category.id) {
+            item.category = nextName;
+            saveLaborItemToServer(item, version.id, "已更新分类库");
+          }
         });
       });
-      saveState("已更新分类库");
+      saveLaborCategoryToServer(category, "已更新分类库");
       renderLaborLibrary();
     });
     node.querySelector(".category-description-input").addEventListener("input", (event) => {
       category.description = event.target.value;
-      saveState("已更新分类库");
+      saveLaborCategoryToServer(category, "已更新分类库");
       renderTotalsAndPreview();
     });
     node.querySelector(".category-delete").addEventListener("click", () => {
@@ -3911,10 +4213,11 @@ function renderCategoryLibrary() {
             if (item.categoryId === category.id) {
               item.categoryId = "";
               item.category = "";
+              saveLaborItemToServer(item, version.id, "已删除分类");
             }
           });
         });
-        saveState("已删除分类");
+        deleteLaborCategoryFromServer(category.id, "已删除分类");
         renderLaborLibrary();
       });
     });
@@ -3924,13 +4227,14 @@ function renderCategoryLibrary() {
 }
 
 function addCategory() {
-  state.categories.push({
+  const category = {
     id: makeId("category"),
     name: createUniqueCategoryName(),
     description: "",
     sortOrder: currentCategories().length
-  });
-  saveState("已添加分类");
+  };
+  state.categories.push(category);
+  saveLaborCategoryToServer(category, "已添加分类");
   renderLaborLibrary();
 }
 
@@ -3986,7 +4290,7 @@ function addLaborItemAt(position = null, categoryId = "", visibleItems = null) {
       });
   }
   state.pendingLaborItemName = newItem.name;
-  saveState("新增工费条目");
+  version.items.forEach((item) => saveLaborItemToServer(item, version.id, "新增工费条目"));
   renderLaborLibrary();
 }
 
@@ -4010,7 +4314,7 @@ function nextItemSortOrder(categoryId, excludeName = "") {
 
 function toggleCategoryLibrary() {
   state.categoryLibraryCollapsed = !state.categoryLibraryCollapsed;
-  saveState(state.categoryLibraryCollapsed ? "已收起分类库" : "已展开分类库");
+  saveUiStatePatch({ categoryLibraryCollapsed: state.categoryLibraryCollapsed }, state.categoryLibraryCollapsed ? "已收起分类库" : "已展开分类库");
   renderLaborLibrary();
 }
 
@@ -4068,7 +4372,7 @@ function moveCategoryBefore(draggedId, targetId) {
   const [dragged] = categories.splice(draggedIndex, 1);
   categories.splice(targetIndex, 0, dragged);
   state.categories = categories.map((item, index) => ({ ...item, sortOrder: index }));
-  saveState("已调整分类顺序");
+  state.categories.forEach((category) => saveLaborCategoryToServer(category, "已调整分类顺序"));
   renderLaborLibrary();
 }
 
@@ -4138,10 +4442,12 @@ function moveLaborItemBefore(draggedItemName, targetItemName, categoryId, visibl
 
   reordered.forEach((item, index) => {
     const actual = version.items.find((entry) => entry.name === item.name);
-    if (actual) actual.sortOrder = index;
+    if (actual) {
+      actual.sortOrder = index;
+      saveLaborItemToServer(actual, version.id, "已调整工费条目顺序");
+    }
   });
 
-  saveState("已调整工费条目顺序");
   renderLaborLibrary();
 }
 
@@ -4204,13 +4510,14 @@ function moveMaterialBefore(draggedId, targetId, visibleMaterials) {
   const [dragged] = reordered.splice(draggedIndex, 1);
   reordered.splice(targetIndex, 0, dragged);
   state.materials = [...reordered, ...hiddenMaterials].map((material, index) => ({ ...material, sortOrder: index }));
-  saveState("已调整主材顺序");
+  state.materials.forEach((material) => saveMaterialToServer(material, "已调整主材顺序"));
   renderMaterials();
 }
 
 function bindGenericMaterialDragAndDrop() {
   if (!els.materialList) return;
   let draggedKindId = "";
+  let draggedCategoryName = "";
   const rows = [...els.materialList.querySelectorAll(".generic-material-row")];
 
   rows.forEach((row) => {
@@ -4228,16 +4535,19 @@ function bindGenericMaterialDragAndDrop() {
         return;
       }
       draggedKindId = row.dataset.kindId || "";
+      draggedCategoryName = row.dataset.categoryName || "";
       row.classList.add("dragging");
     });
     row.addEventListener("dragend", () => {
       canDragGenericMaterial = false;
       draggedKindId = "";
+      draggedCategoryName = "";
       row.classList.remove("dragging");
       rows.forEach((item) => item.classList.remove("drag-over"));
     });
     row.addEventListener("dragover", (event) => {
       if (!draggedKindId || draggedKindId === row.dataset.kindId) return;
+      if (draggedCategoryName !== row.dataset.categoryName) return;
       event.preventDefault();
       rows.forEach((item) => item.classList.remove("drag-over"));
       row.classList.add("drag-over");
@@ -4248,6 +4558,7 @@ function bindGenericMaterialDragAndDrop() {
     row.addEventListener("drop", (event) => {
       event.preventDefault();
       const targetKindId = row.dataset.kindId || "";
+      if (draggedCategoryName !== row.dataset.categoryName) return;
       if (!draggedKindId || !targetKindId || draggedKindId === targetKindId) return;
       moveGenericMaterialBefore(draggedKindId, targetKindId);
       draggedKindId = "";
@@ -4256,14 +4567,95 @@ function bindGenericMaterialDragAndDrop() {
 }
 
 function moveGenericMaterialBefore(draggedId, targetId) {
-  const reordered = currentGenericMaterials();
+  const dragged = findGenericMaterial(draggedId);
+  const target = findGenericMaterial(targetId);
+  if (!dragged || !target) return;
+  const category = genericMaterialCategoryName(dragged.libraryCategory);
+  if (category !== genericMaterialCategoryName(target.libraryCategory)) return;
+  const reordered = genericMaterialsForManagement().filter((kind) => genericMaterialCategoryName(kind.libraryCategory) === category);
   const draggedIndex = reordered.findIndex((kind) => kind.id === draggedId);
   const targetIndex = reordered.findIndex((kind) => kind.id === targetId);
   if (draggedIndex < 0 || targetIndex < 0) return;
-  const [dragged] = reordered.splice(draggedIndex, 1);
-  reordered.splice(targetIndex, 0, dragged);
-  state.genericMaterials = reordered.map((kind, index) => ({ ...kind, sortOrder: index }));
-  saveState("已调整抽象主材顺序");
+  const [draggedKind] = reordered.splice(draggedIndex, 1);
+  reordered.splice(targetIndex, 0, draggedKind);
+  reordered.forEach((kind, index) => {
+    const original = findGenericMaterial(kind.id);
+    if (original) original.sortOrder = index;
+  });
+  reordered.forEach((kind) => saveMaterialKindToServer(kind, "已调整抽象主材顺序"));
+  renderMaterials();
+}
+
+function bindGenericMaterialCategoryDragAndDrop() {
+  if (!els.materialList) return;
+  let draggedCategoryName = "";
+  const rows = [...els.materialList.querySelectorAll(".generic-material-group-row")];
+
+  rows.forEach((row) => {
+    let canDragCategory = false;
+    let categoryWasDragged = false;
+    const dragButton = row.querySelector(".generic-material-category-drag");
+    dragButton?.addEventListener("pointerdown", () => { canDragCategory = true; });
+    dragButton?.addEventListener("pointerup", () => {
+      setTimeout(() => { canDragCategory = false; }, 0);
+    });
+    dragButton?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      canDragCategory = false;
+      if (categoryWasDragged) return;
+      toggleGenericMaterialCategory(row.dataset.categoryName);
+    });
+    row.addEventListener("dragstart", (event) => {
+      if (!canDragCategory && !event.target.closest(".generic-material-category-drag")) {
+        event.preventDefault();
+        canDragCategory = false;
+        return;
+      }
+      draggedCategoryName = row.dataset.categoryName || "";
+      categoryWasDragged = true;
+      row.classList.add("dragging");
+    });
+    row.addEventListener("dragend", () => {
+      canDragCategory = false;
+      draggedCategoryName = "";
+      row.classList.remove("dragging");
+      rows.forEach((item) => item.classList.remove("drag-over"));
+      setTimeout(() => { categoryWasDragged = false; }, 0);
+    });
+    row.addEventListener("dragover", (event) => {
+      const targetCategoryName = row.dataset.categoryName || "";
+      if (!draggedCategoryName || draggedCategoryName === targetCategoryName) return;
+      event.preventDefault();
+      rows.forEach((item) => item.classList.remove("drag-over"));
+      row.classList.add("drag-over");
+    });
+    row.addEventListener("dragleave", () => {
+      row.classList.remove("drag-over");
+    });
+    row.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const targetCategoryName = row.dataset.categoryName || "";
+      if (!draggedCategoryName || !targetCategoryName || draggedCategoryName === targetCategoryName) return;
+      moveGenericMaterialCategoryBefore(draggedCategoryName, targetCategoryName);
+      draggedCategoryName = "";
+    });
+  });
+}
+
+function moveGenericMaterialCategoryBefore(draggedName, targetName) {
+  const categories = sortedGenericMaterialCategories();
+  const draggedIndex = categories.findIndex((category) => category === draggedName);
+  const targetIndex = categories.findIndex((category) => category === targetName);
+  if (draggedIndex < 0 || targetIndex < 0) return;
+  const [dragged] = categories.splice(draggedIndex, 1);
+  categories.splice(targetIndex, 0, dragged);
+  categories.forEach((category, index) => {
+    if (!state.genericMaterialCategoryState[category]) {
+      state.genericMaterialCategoryState[category] = { collapsed: true, sortOrder: index };
+    }
+    state.genericMaterialCategoryState[category].sortOrder = index;
+  });
+  saveUiStatePatch({ genericMaterialCategoryState: state.genericMaterialCategoryState }, "已调整抽象主材分类顺序");
   renderMaterials();
 }
 
@@ -4567,20 +4959,20 @@ function applicableTemplates(workType) {
 
 function applyTemplateToSpace(template, space) {
   const quote = currentQuote();
-  if (!quote || !template || !space) return 0;
+  if (!quote || !template || !space) return [];
   const matchingItems = sortedTemplateItems(template);
-  if (!matchingItems.length) return 0;
+  if (!matchingItems.length) return [];
   if (template.iconKey && (!space.iconKey || space.iconKey === defaultProjectGroupIconKey(space))) {
     space.iconKey = template.iconKey;
   }
   const newLines = matchingItems.map((templateItem) => makeQuoteItemFromTemplateItem(templateItem, space, quote)).filter(Boolean);
   quote.lines.push(...newLines);
-  return newLines.length;
+  return newLines;
 }
 
 function syncTemplateToProjectGroup(template, space) {
   const quote = currentQuote();
-  if (!quote || !template || !space) return { added: 0, skipped: 0 };
+  if (!quote || !template || !space) return { added: 0, skipped: 0, lines: [] };
   const existingKeys = new Set(
     quoteItemsForProjectGroup(quote, space.id)
       .map((line) => quoteItemTemplateKey(line))
@@ -4608,7 +5000,7 @@ function syncTemplateToProjectGroup(template, space) {
   }
   space.templateId = template.id;
   quote.lines.push(...newLines);
-  return { added: newLines.length, skipped };
+  return { added: newLines.length, skipped, lines: newLines };
 }
 
 function quoteItemTemplateKey(line) {
@@ -4845,7 +5237,8 @@ function openSyncProjectGroupTemplateDialog(spaceId) {
       return;
     }
     const result = syncTemplateToProjectGroup(template, space);
-    saveState(result.added ? `已同步模板，新增 ${result.added} 项` : "模板已同步，没有新增项目");
+    saveProjectGroupToServer(space, quote, result.added ? `已同步模板，新增 ${result.added} 项` : "模板已同步，没有新增项目");
+    result.lines.forEach((line) => saveQuoteItemToServer(line, quote, "已同步模板"));
     close();
     renderAll();
   });
@@ -4868,8 +5261,9 @@ function createProjectGroupFromDialog(spaceName, templateId = "", insertPosition
   spaces.splice(position, 0, space);
   spaces.forEach((entry, index) => { entry.sortOrder = index; });
   quote.spaces = spaces;
-  const count = applyTemplateToSpace(selectedTemplate, space);
-  saveState(count ? `已添加项目组合并套用 ${count} 项模板` : "已添加项目组合");
+  const newLines = applyTemplateToSpace(selectedTemplate, space);
+  quote.spaces.forEach((entry) => saveProjectGroupToServer(entry, quote, newLines.length ? `已添加项目组合并套用 ${newLines.length} 项模板` : "已添加项目组合"));
+  newLines.forEach((line) => saveQuoteItemToServer(line, quote, "已添加项目组合"));
   renderAll();
 }
 
@@ -4895,7 +5289,7 @@ function addQuoteItem(spaceId = "", sourceType = "labor") {
     line.labor = 0;
   }
   quote.lines.push(line);
-  saveState("已添加工程项目");
+  saveQuoteItemToServer(line, quote, "已添加工程项目");
   renderAll();
 }
 
@@ -4922,7 +5316,7 @@ function addQuoteItemAt(spaceId, position = 0, sourceType = "labor") {
   } else {
     quote.lines.splice(insertBefore, 0, newLine);
   }
-  saveState("已添加工程项目");
+  quote.lines.forEach((line) => saveQuoteItemToServer(line, quote, "已添加工程项目"));
   renderAll();
 }
 
@@ -4942,7 +5336,8 @@ function deleteProjectGroup(spaceId) {
   confirmSimpleDelete(space.name || "项目组合", () => {
     quote.spaces = quote.spaces.filter((entry) => entry.id !== space.id);
     quote.spaces.forEach((entry, index) => { entry.sortOrder = index; });
-    saveState("已删除项目组合");
+    deleteProjectGroupFromServer(space.id, "已删除项目组合");
+    quote.spaces.forEach((entry) => saveProjectGroupToServer(entry, quote, "已删除项目组合"));
     renderAll();
   });
 }
@@ -5015,7 +5410,7 @@ function moveProjectGroupBefore(draggedId, targetId) {
   spaces.splice(targetIndex, 0, dragged);
   spaces.forEach((space, sortIndex) => { space.sortOrder = sortIndex; });
   quote.spaces = spaces;
-  saveState("已调整项目组合顺序");
+  quote.spaces.forEach((space) => saveProjectGroupToServer(space, quote, "已调整项目组合顺序"));
   renderAll();
 }
 
@@ -5028,7 +5423,7 @@ function toggleProjectGroup(spaceId) {
   } else {
     space.collapsed = true;
   }
-  saveState(space.collapsed ? "已折叠项目组合" : "已展开项目组合");
+  quote.spaces.forEach((entry) => saveProjectGroupToServer(entry, quote, space.collapsed ? "已折叠项目组合" : "已展开项目组合"));
   renderLines();
 }
 
@@ -5051,7 +5446,7 @@ function moveQuoteItemToProjectGroup(lineId, targetSpaceId) {
     .filter((item) => item.entry.spaceId === targetSpaceId);
   const lastTargetIndex = targetIndexes[targetIndexes.length - 1]?.index;
   quote.lines.splice(lastTargetIndex === undefined ? quote.lines.length : lastTargetIndex + 1, 0, line);
-  saveState("已移动工程项目");
+  quote.lines.forEach((entry) => saveQuoteItemToServer(entry, quote, "已移动工程项目"));
   renderAll();
 }
 
@@ -5067,8 +5462,9 @@ function setQuoteField(key, value, rerender = false) {
   if (key === "priceVersionId") {
     state.activeVersionId = value;
     quote.lines = quote.lines.map((line) => normalizeQuoteItem(line, value));
+    quote.lines.forEach((line) => saveQuoteItemToServer(line, quote, "已同步工费版本"));
   }
-  saveState("已自动保存");
+  saveQuoteToServer(quote, "已自动保存");
   if (rerender) renderAll();
   else renderTotalsAndPreview();
 }
@@ -5080,9 +5476,12 @@ function updateActiveCustomerFromForm() {
   customer.phone = els.customerPhone.value;
   customer.address = els.customerAddress.value;
   state.quotes.forEach((quote) => {
-    if (quote.customerId === customer.id && !quote.clientName) quote.clientName = customer.name;
+    if (quote.customerId === customer.id && !quote.clientName) {
+      quote.clientName = customer.name;
+      saveQuoteToServer(quote, "已更新客户");
+    }
   });
-  saveState("已更新客户");
+  saveCustomerToServer(customer, "已更新客户");
   renderManager();
 }
 
@@ -5094,13 +5493,19 @@ function cloneVersion() {
     id: makeId("version"),
     name,
     createdAt: new Date().toISOString().slice(0, 10),
-    items: JSON.parse(JSON.stringify(base.items))
+    items: JSON.parse(JSON.stringify(base.items)).map((item) => ({
+      ...item,
+      id: makeId("labor")
+    }))
   };
   state.versions.push(version);
   state.activeVersionId = version.id;
   const quote = currentQuote();
   if (quote) quote.priceVersionId = version.id;
-  saveState("已创建工费版本");
+  savePriceVersionToServer(version, "已创建工费版本");
+  version.items.forEach((item) => saveLaborItemToServer(item, version.id, "已创建工费版本"));
+  saveUiStatePatch({ activeVersionId: state.activeVersionId }, "已创建工费版本");
+  if (quote) saveQuoteToServer(quote, "已创建工费版本");
   renderAll();
 }
 
@@ -5109,7 +5514,7 @@ function renameVersion() {
   const name = prompt("工费版本名称", version.name);
   if (!name) return;
   version.name = name;
-  saveState("已重命名工费版本");
+  savePriceVersionToServer(version, "已重命名工费版本");
   renderAll();
 }
 
@@ -5133,9 +5538,12 @@ function deleteVersion() {
       if (quote.priceVersionId === version.id) {
         quote.priceVersionId = state.activeVersionId;
         quote.lines = quote.lines.map((line) => normalizeQuoteItem(line, quote.priceVersionId));
+        saveQuoteToServer(quote, "已删除工费版本");
+        quote.lines.forEach((line) => saveQuoteItemToServer(line, quote, "已删除工费版本"));
       }
     });
-    saveState("已删除工费版本");
+    deletePriceVersionFromServer(version.id, "已删除工费版本");
+    saveUiStatePatch({ activeVersionId: state.activeVersionId }, "已删除工费版本");
     renderAll();
   }, { message });
 }
@@ -5170,6 +5578,7 @@ function getPortableState() {
       activePage: state.activePage,
       categoryLibraryCollapsed: state.categoryLibraryCollapsed,
       genericMaterialLibraryCollapsed: state.genericMaterialLibraryCollapsed,
+      genericMaterialCategoryState: state.genericMaterialCategoryState,
       supplierMaterialLibraryCollapsed: state.supplierMaterialLibraryCollapsed,
       customers: state.customers,
       quotes: state.quotes,
@@ -5185,67 +5594,6 @@ function getPortableState() {
       returnToTemplateItemId: state.returnToTemplateItemId
     }
   };
-}
-
-function exportDataFile() {
-  const content = JSON.stringify(getPortableState(), null, 2);
-  const blob = new Blob([content], { type: "application/json;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  const date = new Date().toISOString().slice(0, 10);
-  link.href = url;
-  link.download = `报价数据-${date}.json`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-  saveState("已导出数据");
-}
-
-async function importDataFile(event) {
-  const file = event.target.files?.[0];
-  event.target.value = "";
-  if (!file) return;
-  try {
-    const text = await file.text();
-    const parsed = JSON.parse(text);
-    applyImportedState(parsed);
-    saveState("已导入数据");
-    renderAll();
-  } catch (error) {
-    alert("导入失败：这个文件不是有效的报价数据 JSON。");
-  }
-}
-
-function applyImportedState(parsed) {
-  const data = parsed?.data || parsed;
-  if (!data || !Array.isArray(data.versions) || !Array.isArray(data.customers) || !Array.isArray(data.quotes)) {
-    throw new Error("Invalid data file");
-  }
-  state.versions = data.versions;
-  state.categories = data.categories || [];
-  state.materials = data.materials || [];
-  state.genericMaterials = data.genericMaterials || data.genericMaterialNames || data.materialKinds || [];
-  state.templates = data.templates || [];
-  state.packages = data.packages || [];
-  state.activeVersionId = data.activeVersionId || data.versions[0]?.id || "";
-  state.activePage = data.activePage || "manager";
-  state.categoryLibraryCollapsed = data.categoryLibraryCollapsed ?? true;
-  state.genericMaterialLibraryCollapsed = data.genericMaterialLibraryCollapsed ?? true;
-  state.supplierMaterialLibraryCollapsed = data.supplierMaterialLibraryCollapsed ?? false;
-  state.customers = data.customers;
-  state.quotes = data.quotes;
-  state.activeCustomerId = data.activeCustomerId || data.customers[0]?.id || "";
-  state.activeQuoteId = data.activeQuoteId || data.quotes[0]?.id || "";
-  state.activePackageId = data.activePackageId || data.packages?.[0]?.id || "";
-  state.activePackageEstimateId = data.activePackageEstimateId || "";
-  state.activePackageTab = data.activePackageTab === "estimate" ? "estimate" : "description";
-  state.returnToPackageId = data.returnToPackageId || "";
-  state.returnToPackageEstimateId = data.returnToPackageEstimateId || "";
-  state.returnToPackageItemId = data.returnToPackageItemId || "";
-  state.returnToTemplateId = data.returnToTemplateId || "";
-  state.returnToTemplateItemId = data.returnToTemplateItemId || "";
-  normalizeState();
 }
 
 function sortedPackages() {
@@ -5284,7 +5632,7 @@ function renderPackages() {
       state.activePackageId = button.dataset.packageId;
       const estimate = currentPackageEstimate(currentPackage());
       state.activePackageEstimateId = estimate?.id || "";
-      saveState("已选择套餐");
+      saveUiStatePatch({ activePackageId: state.activePackageId, activePackageEstimateId: state.activePackageEstimateId }, "已选择套餐");
       renderPackages();
     });
   });
@@ -5355,7 +5703,7 @@ function renderPackageSections(packageEntry) {
   return sections.map((section) => `
     <div class="package-section ${section.collapsed ? "collapsed" : ""}" data-section-id="${escapeHtml(section.id)}" draggable="true">
       <div class="package-section-head">
-        <button class="package-section-drag" type="button" title="拖动排序" aria-label="拖动排序">⋮⋮</button>
+        <button class="package-section-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动分类排序" aria-label="点击展开或收缩，拖动分类排序" aria-expanded="${String(!section.collapsed)}">⋮⋮</button>
         <input class="package-section-name" type="text" value="${escapeHtml(section.name)}">
         <span class="package-section-count">${(section.items || []).length}</span>
         <button class="add-package-section-item ghost" type="button">添加项目</button>
@@ -5536,7 +5884,7 @@ function bindPackageDetail(packageEntry, estimate) {
   els.packageDetail.querySelectorAll(".package-tab").forEach((button) => {
     button.addEventListener("click", () => {
       state.activePackageTab = button.dataset.packageTab === "estimate" ? "estimate" : "description";
-      saveState("已切换套餐页面");
+      saveUiStatePatch({ activePackageTab: state.activePackageTab }, "已切换套餐页面");
       renderPackages();
     });
   });
@@ -5552,7 +5900,7 @@ function bindPackageMetaInputs(packageEntry) {
     [".package-formula", "quantityFormula"],
     [".package-description", "description"],
     [".package-exclusion", "exclusionNote"]
-  ], { message: "已更新套餐", onChange: renderPackages });
+  ], { message: "已更新套餐", save: (target, message) => savePackageToServer(target, message), onChange: renderPackages });
   els.packageDetail.querySelector(".delete-package")?.addEventListener("click", () => deletePackage(packageEntry));
   els.packageDetail.querySelector(".add-package-section")?.addEventListener("click", () => addPackageSection(packageEntry));
   els.packageDetail.querySelector(".import-package-template")?.addEventListener("click", () => openImportPackageTemplateDialog(packageEntry));
@@ -5568,11 +5916,10 @@ function bindPackageSectionInputs(packageEntry) {
   els.packageDetail.querySelectorAll(".package-section").forEach((node) => {
     const section = packageEntry.sections.find((entry) => entry.id === node.dataset.sectionId);
     if (!section) return;
-    node.querySelector(".package-section-head")?.addEventListener("click", (event) => {
-      if (event.target.closest("button, input, select, textarea")) return;
-      togglePackageSection(packageEntry, section);
+    bindEditableObjectField(node, ".package-section-name", section, "name", {
+      message: "已更新套餐说明",
+      save: (target, message) => savePackageSectionToServer(target, packageEntry, message)
     });
-    bindEditableObjectField(node, ".package-section-name", section, "name", { message: "已更新套餐说明" });
     node.querySelector(".add-package-section-item")?.addEventListener("click", () => addPackageSectionItem(section));
     node.querySelector(".delete-package-section")?.addEventListener("click", () => deletePackageSection(packageEntry, section));
     node.querySelectorAll(".package-section-insert-slot").forEach((slot) => {
@@ -5590,15 +5937,19 @@ function bindPackageSectionInputs(packageEntry) {
         item.materialId = "";
         item.materialCategory = "";
         item.description = "";
-        saveState("已切换套餐说明来源");
+        savePackageSectionItemToServer(item, section, "已切换套餐说明来源");
         renderPackages();
       });
       bindPackageSectionItemNameInput(row, item);
       bindEditableObjectField(row, ".section-item-provider", item, "area", {
         message: "已更新套餐说明",
+        save: (target, message) => savePackageSectionItemToServer(target, section, message),
         onInput: () => { item.provider = item.area; }
       });
-      bindEditableObjectField(row, ".section-item-description", item, "description", { message: "已更新套餐说明" });
+      bindEditableObjectField(row, ".section-item-description", item, "description", {
+        message: "已更新套餐说明",
+        save: (target, message) => savePackageSectionItemToServer(target, section, message)
+      });
       row.querySelector(".delete-section-item")?.addEventListener("click", () => deletePackageSectionItem(section, item));
     });
   });
@@ -5616,7 +5967,7 @@ function bindPackageSectionItemNameInput(row, item) {
       if (item.sourceType === "material") {
         item.materialId = "";
       }
-      saveState("已更新套餐说明");
+      savePackageSectionItemToServer(item, packageSectionForItem(item), "已更新套餐说明");
       renderPackageSectionItemSuggestions(suggestions, item, value);
     },
     onFocus: (value) => renderPackageSectionItemSuggestions(suggestions, item, value),
@@ -5728,7 +6079,7 @@ function selectPackageSectionGenericMaterial(item, kindId) {
   item.materialCategory = kind.primaryCategory || "";
   item.unit = kind.unit || "";
   item.description = kind.note || "";
-  saveState("已选择套餐说明抽象主材");
+  savePackageSectionItemToServer(item, packageSectionForItem(item), "已选择套餐说明抽象主材");
   renderPackages();
 }
 
@@ -5786,7 +6137,7 @@ function selectPackageSectionLabor(item, itemName, displayName = "") {
   item.materialCategory = "";
   item.unit = laborItem.unit || parsePriceNameUnit(laborItem.name)?.unit || "";
   item.description = laborItem.description || "";
-  saveState("已选择套餐说明工费");
+  savePackageSectionItemToServer(item, packageSectionForItem(item), "已选择套餐说明工费");
   renderPackages();
 }
 
@@ -5802,7 +6153,7 @@ function selectPackageSectionMaterial(item, materialId) {
   item.materialCategory = kind?.primaryCategory || material.primaryCategory || "";
   item.unit = material.unit || kind?.unit || "";
   item.description = material.note || kind?.note || "";
-  saveState("已选择套餐说明主材");
+  savePackageSectionItemToServer(item, packageSectionForItem(item), "已选择套餐说明主材");
   renderPackages();
 }
 
@@ -5811,7 +6162,7 @@ function togglePackageSection(packageEntry, section) {
   packageEntry.sections.forEach((entry) => {
     entry.collapsed = shouldOpen ? entry.id !== section.id : true;
   });
-  saveState(section.collapsed ? "已收起套餐分类" : "已展开套餐分类");
+  packageEntry.sections.forEach((entry) => savePackageSectionToServer(entry, packageEntry, section.collapsed ? "已收起套餐分类" : "已展开套餐分类"));
   renderPackages();
 }
 
@@ -5881,7 +6232,7 @@ function reorderPackageSection(packageEntry, draggedId, targetId) {
   const [dragged] = sections.splice(draggedIndex, 1);
   sections.splice(targetIndex, 0, dragged);
   packageEntry.sections = sections.map((entry, index) => ({ ...entry, sortOrder: index }));
-  saveState("已调整套餐分类顺序");
+  packageEntry.sections.forEach((section) => savePackageSectionToServer(section, packageEntry, "已调整套餐分类顺序"));
   renderPackages();
 }
 
@@ -5891,7 +6242,8 @@ function bindPackageEstimateInputs(packageEntry, estimate) {
     button.addEventListener("click", () => {
       state.activePackageEstimateId = button.dataset.estimateId;
       packageEntry.estimates.forEach((entry) => { entry.active = entry.id === state.activePackageEstimateId; });
-      saveState("已切换套餐测算");
+      packageEntry.estimates.forEach((entry) => savePackageEstimateToServer(entry, packageEntry, "已切换套餐测算"));
+      saveUiStatePatch({ activePackageEstimateId: state.activePackageEstimateId }, "已切换套餐测算");
       renderPackages();
     });
   });
@@ -5904,6 +6256,7 @@ function bindPackageEstimateInputs(packageEntry, estimate) {
     [".estimate-price", "quoteUnitPrice", "number"]
   ], {
     message: "已更新测算",
+    save: (target, message) => savePackageEstimateToServer(target, packageEntry, message),
     blurOnEnter: true,
     onInput: (key) => {
       if (key === "quoteUnitPrice" && !estimate.quoteUnitPrice) estimate.quoteUnitPrice = 0;
@@ -5932,6 +6285,7 @@ function bindPackageEstimateGroups(packageEntry, estimate) {
     ].forEach(([selector, key, mode]) => bindEditableObjectField(node, selector, group, key, {
       mode,
       message: "已更新测算组合",
+      save: (target, message) => savePackageEstimateGroupToServer(target, estimate, message),
       blurOnEnter: true,
       onInput: () => updatePackageEstimateGroupQuantities(packageEntry, estimate, group),
       onChange: renderPackages
@@ -5959,7 +6313,7 @@ function togglePackageEstimateGroup(estimate, group) {
   estimate.groups.forEach((entry) => {
     entry.collapsed = shouldOpen ? entry.id !== group.id : true;
   });
-  saveState(group.collapsed ? "已收起测算组合" : "已展开测算组合");
+  estimate.groups.forEach((entry) => savePackageEstimateGroupToServer(entry, estimate, group.collapsed ? "已收起测算组合" : "已展开测算组合"));
   renderPackages();
 }
 
@@ -5976,7 +6330,7 @@ function bindPackageEstimateItemRows(packageEntry, estimate, group, node) {
       item.itemName = "";
       item.materialId = "";
       item.materialCategory = "";
-      saveState("已切换测算条目类型");
+      savePackageEstimateItemToServer(item, estimate, "已切换测算条目类型");
       renderPackages();
     });
     const nameInput = row.querySelector(".estimate-item-name");
@@ -5991,19 +6345,19 @@ function bindPackageEstimateItemRows(packageEntry, estimate, group, node) {
     row.querySelector(".estimate-item-area")?.addEventListener("keydown", blurOnEnter);
     row.querySelector(".estimate-item-area")?.addEventListener("input", (event) => {
       item.area = event.target.value;
-      saveState("已更新测算条目");
+      savePackageEstimateItemToServer(item, estimate, "已更新测算条目");
     });
     const quantityInput = row.querySelector(".estimate-item-quantity");
     quantityInput?.addEventListener("focus", (event) => event.target.select());
     quantityInput?.addEventListener("keydown", blurOnEnter);
     quantityInput?.addEventListener("input", (event) => {
       item.quantity = toNumber(event.target.value);
-      saveState("已更新测算工程量");
+      savePackageEstimateItemToServer(item, estimate, "已更新测算工程量");
     });
     quantityInput?.addEventListener("change", () => renderPackages());
     row.querySelector(".estimate-item-included")?.addEventListener("change", (event) => {
       item.includedType = event.target.value;
-      saveState("已更新测算归类");
+      savePackageEstimateItemToServer(item, estimate, "已更新测算归类");
       renderPackages();
     });
     row.querySelectorAll(".estimate-jump-labor").forEach((button) => {
@@ -6019,7 +6373,7 @@ function bindPackageEstimateItemRows(packageEntry, estimate, group, node) {
     row.querySelector(".delete-estimate-item")?.addEventListener("click", () => {
       confirmSimpleDelete(item.itemName || "测算条目", () => {
         estimate.items = estimate.items.filter((entry) => entry.id !== item.id);
-        saveState("已删除测算条目");
+        deletePackageEstimateItemFromServer(item.id, "已删除测算条目");
         renderPackages();
       });
     });
@@ -6086,7 +6440,7 @@ function syncPackageEstimateFromSections(packageEntry, estimate, options = {}) {
     .map((group, index) => ({ ...group, sortOrder: index }));
   keepOnlyOneOpenPackageEstimateGroup(estimate.groups);
   if (!options.silent) {
-    saveState("已同步套餐项目组合");
+    savePackageTreeToServer(packageEntry, "已同步套餐项目组合");
     renderPackages();
   }
 }
@@ -6143,7 +6497,8 @@ function addPackage() {
   state.activePackageId = entry.id;
   state.activePackageEstimateId = entry.estimates[0]?.id || "";
   if (entry.estimates[0]) syncPackageEstimateFromSections(entry, entry.estimates[0], { silent: true });
-  saveState("已添加套餐");
+  savePackageTreeToServer(entry, "已添加套餐");
+  saveUiStatePatch({ activePackageId: state.activePackageId, activePackageEstimateId: state.activePackageEstimateId }, "已添加套餐");
   renderAll();
 }
 
@@ -6165,19 +6520,22 @@ function deletePackage(packageEntry) {
     state.activePackageId = nextPackage?.id || "";
     state.activePackageEstimateId = nextPackage ? currentPackageEstimate(nextPackage)?.id || "" : "";
     state.returnToPackageId = state.returnToPackageId === packageEntry.id ? "" : state.returnToPackageId;
-    saveState("已删除套餐");
+    deletePackageFromServer(packageEntry.id, "已删除套餐");
+    state.packages.forEach((entry) => savePackageToServer(entry, "已删除套餐"));
+    saveUiStatePatch({ activePackageId: state.activePackageId, activePackageEstimateId: state.activePackageEstimateId, returnToPackageId: state.returnToPackageId }, "已删除套餐");
     renderAll();
   }, { message: "删除套餐会同时删除它的套餐说明和成本测算，请确认要删除下面这项内容。" });
 }
 
 function addPackageSection(packageEntry) {
   packageEntry.sections.forEach((section) => { section.collapsed = true; });
-  packageEntry.sections.push(normalizePackageSection({
+  const section = normalizePackageSection({
     name: `说明分类 ${packageEntry.sections.length + 1}`,
     sortOrder: packageEntry.sections.length,
     collapsed: false
-  }, packageEntry.sections.length));
-  saveState("已添加套餐说明分类");
+  }, packageEntry.sections.length);
+  packageEntry.sections.push(section);
+  packageEntry.sections.forEach((entry) => savePackageSectionToServer(entry, packageEntry, "已添加套餐说明分类"));
   renderPackages();
 }
 
@@ -6283,7 +6641,7 @@ function importPackageSectionFromTemplate(packageEntry, template, sectionName) {
   packageEntry.sections.push(section);
   const estimate = currentPackageEstimate(packageEntry);
   if (estimate) syncPackageEstimateFromSections(packageEntry, estimate, { silent: true });
-  saveState("已从模板导入项目组合");
+  savePackageTreeToServer(packageEntry, "已从模板导入项目组合");
   renderPackages();
 }
 
@@ -6340,7 +6698,7 @@ function addPackageSectionItem(section, position = null) {
     sortOrder: position === null ? items.length : normalizeInsertPosition(position, items.length)
   }, items.length);
   section.items = insertItemAndRenumberSortOrder(items, nextItem, position);
-  saveState("已添加套餐说明项目");
+  section.items.forEach((item) => savePackageSectionItemToServer(item, section, "已添加套餐说明项目"));
   renderPackages();
 }
 
@@ -6348,7 +6706,8 @@ function deletePackageSection(packageEntry, section) {
   confirmSimpleDelete(section.name || "套餐说明分类", () => {
     packageEntry.sections = packageEntry.sections.filter((entry) => entry.id !== section.id);
     packageEntry.sections.forEach((entry, index) => { entry.sortOrder = index; });
-    saveState("已删除套餐说明分类");
+    deletePackageSectionFromServer(section.id, "已删除套餐说明分类");
+    packageEntry.sections.forEach((entry) => savePackageSectionToServer(entry, packageEntry, "已删除套餐说明分类"));
     renderPackages();
   });
 }
@@ -6357,7 +6716,8 @@ function deletePackageSectionItem(section, item) {
   confirmSimpleDelete(item.name || item.itemName || "套餐说明项目", () => {
     section.items = section.items.filter((entry) => entry.id !== item.id);
     section.items.forEach((entry, index) => { entry.sortOrder = index; });
-    saveState("已删除套餐说明项目");
+    deletePackageSectionItemFromServer(item.id, "已删除套餐说明项目");
+    section.items.forEach((entry) => savePackageSectionItemToServer(entry, section, "已删除套餐说明项目"));
     renderPackages();
   });
 }
@@ -6374,7 +6734,8 @@ function addPackageEstimate(packageEntry) {
   packageEntry.estimates.push(estimate);
   state.activePackageEstimateId = estimate.id;
   syncPackageEstimateFromSections(packageEntry, estimate, { silent: true });
-  saveState("已添加套餐测算");
+  savePackageTreeToServer(packageEntry, "已添加套餐测算");
+  saveUiStatePatch({ activePackageEstimateId: state.activePackageEstimateId }, "已添加套餐测算");
   renderPackages();
 }
 
@@ -6387,28 +6748,34 @@ function deletePackageEstimate(packageEntry, estimate) {
     packageEntry.estimates = packageEntry.estimates.filter((entry) => entry.id !== estimate.id);
     packageEntry.estimates.forEach((entry, index) => { entry.sortOrder = index; entry.active = index === 0; });
     state.activePackageEstimateId = packageEntry.estimates[0]?.id || "";
-    saveState("已删除套餐测算");
+    deletePackageEstimateFromServer(estimate.id, "已删除套餐测算");
+    packageEntry.estimates.forEach((entry) => savePackageEstimateToServer(entry, packageEntry, "已删除套餐测算"));
+    saveUiStatePatch({ activePackageEstimateId: state.activePackageEstimateId }, "已删除套餐测算");
     renderPackages();
   });
 }
 
 function addPackageEstimateGroup(estimate) {
   estimate.groups.forEach((group) => { group.collapsed = true; });
-  estimate.groups.push(normalizePackageEstimateGroup({
+  const group = normalizePackageEstimateGroup({
     name: `测算组合 ${estimate.groups.length + 1}`,
     collapsed: false,
     sortOrder: estimate.groups.length
-  }, estimate.groups.length));
-  saveState("已添加测算组合");
+  }, estimate.groups.length);
+  estimate.groups.push(group);
+  estimate.groups.forEach((entry) => savePackageEstimateGroupToServer(entry, estimate, "已添加测算组合"));
   renderPackages();
 }
 
 function deletePackageEstimateGroup(estimate, group) {
   confirmSimpleDelete(group.name || "测算组合", () => {
+    const deletedItemIds = estimate.items.filter((entry) => entry.groupId === group.id).map((entry) => entry.id);
     estimate.groups = estimate.groups.filter((entry) => entry.id !== group.id);
     estimate.items = estimate.items.filter((entry) => entry.groupId !== group.id);
     estimate.groups.forEach((entry, index) => { entry.sortOrder = index; });
-    saveState("已删除测算组合");
+    deletePackageEstimateGroupFromServer(group.id, "已删除测算组合");
+    deletedItemIds.forEach((id) => deletePackageEstimateItemFromServer(id, "已删除测算组合"));
+    estimate.groups.forEach((entry) => savePackageEstimateGroupToServer(entry, estimate, "已删除测算组合"));
     renderPackages();
   }, { message: "删除测算组合会同时删除组合内条目，请确认要删除下面这项内容。" });
 }
@@ -6425,7 +6792,9 @@ function addPackageEstimateItem(estimate, group, sourceType, position = null) {
     ...(estimate.items || []).filter((entry) => entry.groupId !== group.id),
     ...insertItemAndRenumberSortOrder(groupItems, nextItem, position)
   ];
-  saveState(sourceType === "material" ? "已添加测算主材" : "已添加测算工费");
+  estimate.items
+    .filter((entry) => entry.groupId === group.id)
+    .forEach((entry) => savePackageEstimateItemToServer(entry, estimate, sourceType === "material" ? "已添加测算主材" : "已添加测算工费"));
   renderPackages();
 }
 
@@ -6566,7 +6935,7 @@ function selectPackageLaborSuggestion(item, itemName, estimate, group) {
   item.materialId = "";
   const recommended = evaluatePackageItemQuantity(laborItem.quantityFormula, estimate, group, laborItem.quantityRoundDown);
   if (recommended !== null) item.quantity = roundQuantity(recommended);
-  saveState("已选择测算工费");
+  savePackageEstimateItemToServer(item, estimate, "已选择测算工费");
   renderPackages();
 }
 
@@ -6579,7 +6948,7 @@ function selectPackageMaterialSuggestion(item, materialId) {
   item.materialId = material.id;
   item.itemName = kind?.name || material.name;
   item.materialCategory = kind?.primaryCategory || material.primaryCategory || material.category || "";
-  saveState("已选择测算主材");
+  savePackageEstimateItemToServer(item, packageEstimateForItem(item), "已选择测算主材");
   renderPackages();
 }
 
@@ -6591,7 +6960,7 @@ function selectPackageGenericMaterialSuggestion(item, kindId) {
   item.materialId = "";
   item.itemName = kind.name;
   item.materialCategory = kind.primaryCategory || "";
-  saveState("已选择测算抽象主材");
+  savePackageEstimateItemToServer(item, packageEstimateForItem(item), "已选择测算抽象主材");
   renderPackages();
 }
 
@@ -6621,7 +6990,8 @@ function bindEditableObjectField(root, selector, target, key, options = {}) {
   input.addEventListener("input", (event) => {
     target[key] = options.mode === "number" ? toNumber(event.target.value) : event.target.value;
     options.onInput?.(key, target, event);
-    saveState(options.message || "已保存");
+    if (options.save) options.save(target, options.message || "已保存", key, event);
+    else saveState(options.message || "已保存");
   });
   if (options.blurOnEnter) input.addEventListener("keydown", blurOnEnter);
   if (options.onChange) input.addEventListener("change", options.onChange);
@@ -6637,13 +7007,26 @@ function deleteLaborItem(itemName) {
   const item = version.items.find((entry) => entry.name === itemName);
   if (!item) return;
   confirmSimpleDelete(item.name || "工费条目", () => {
+    const affectedLines = collectQuoteLinesByLaborItemName(item.name, version.id);
     version.items = version.items.filter((entry) => entry.name !== item.name);
     unlinkLaborItemFromQuotes(item.name, version.id);
     if (state.pendingLaborItemName === item.name) state.pendingLaborItemName = "";
     if (state.expandedLaborItemName === item.name) state.expandedLaborItemName = "";
-    saveState("删除工费条目");
+    deleteLaborItemFromServer(item.id, "删除工费条目");
+    affectedLines.forEach(({ quote, line }) => saveQuoteItemToServer(line, quote, "删除工费条目"));
     renderAll();
   });
+}
+
+function collectQuoteLinesByLaborItemName(itemName, versionId = currentVersion()?.id) {
+  const affected = [];
+  state.quotes.forEach((quote) => {
+    if (versionId && quote.priceVersionId !== versionId) return;
+    quote.lines.forEach((line) => {
+      if (line.priceItemName === itemName) affected.push({ quote, line });
+    });
+  });
+  return affected;
 }
 
 function unlinkLaborItemFromQuotes(itemName, versionId) {
@@ -6658,6 +7041,7 @@ function unlinkLaborItemFromQuotes(itemName, versionId) {
 }
 
 function syncQuoteItemLaborParts(item) {
+  const affected = [];
   state.quotes.forEach((quote) => {
     quote.lines.forEach((line) => {
       if (line.priceItemName === item.name && quote.priceVersionId === currentVersion().id) {
@@ -6670,13 +7054,16 @@ function syncQuoteItemLaborParts(item) {
           line.materialId = "";
         }
         line.legacyUnitPrice = null;
+        affected.push({ quote, line });
       }
     });
   });
+  return affected;
 }
 
 function syncQuoteItemLaborItemName(oldName, newName) {
   const oldDisplayName = displayEngineeringName(oldName);
+  const affected = [];
   state.quotes.forEach((quote) => {
     quote.lines.forEach((line) => {
       if (line.priceItemName !== oldName) return;
@@ -6684,6 +7071,7 @@ function syncQuoteItemLaborItemName(oldName, newName) {
       if (!line.engineeringName || line.engineeringName === oldName || line.engineeringName === oldDisplayName) {
         line.engineeringName = newName;
       }
+      affected.push({ quote, line });
     });
   });
   state.templates.forEach((template) => {
@@ -6705,6 +7093,7 @@ function syncQuoteItemLaborItemName(oldName, newName) {
       });
     });
   });
+  return affected;
 }
 
 function syncQuoteItemMaterialName(materialId, newName) {
@@ -6727,6 +7116,22 @@ function saveState(message = "已保存") {
   }
 }
 
+async function saveStateNow(message = "已保存") {
+  if (state.loadBlocked) {
+    if (els.saveStatus) els.saveStatus.textContent = "数据未载入，已阻止保存，避免覆盖 SQLite。";
+    return false;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (els.saveStatus) {
+    els.saveStatus.textContent = `正在保存 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  const saved = await saveStateToServer({ immediate: true });
+  if (els.saveStatus) {
+    els.saveStatus.textContent = `${saved ? message : "保存失败，请确认 Node 服务正在运行"} · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  return saved;
+}
+
 async function loadStateFromServer() {
   try {
     const response = await fetch("/api/data", { cache: "no-store" });
@@ -6739,17 +7144,292 @@ async function loadStateFromServer() {
   }
 }
 
-async function saveStateToServer() {
+function saveMaterialKindToServer(kind, message = "已保存") {
+  return saveEntityToServer(`/api/material-kinds/${encodeURIComponent(kind.id)}`, kind, message);
+}
+
+function saveMaterialKindToServerNow(kind, message = "已保存") {
+  return saveEntityToServer(`/api/material-kinds/${encodeURIComponent(kind.id)}`, kind, message, { immediate: true });
+}
+
+function saveMaterialToServer(material, message = "已保存") {
+  return saveEntityToServer(`/api/materials/${encodeURIComponent(material.id)}`, material, message);
+}
+
+function saveMaterialToServerNow(material, message = "已保存") {
+  return saveEntityToServer(`/api/materials/${encodeURIComponent(material.id)}`, material, message, { immediate: true });
+}
+
+function deleteMaterialKindFromServer(id, message = "已保存") {
+  deleteEntityFromServer(`/api/material-kinds/${encodeURIComponent(id)}`, message);
+}
+
+function deleteMaterialFromServer(id, message = "已保存") {
+  deleteEntityFromServer(`/api/materials/${encodeURIComponent(id)}`, message);
+}
+
+function saveLaborItemToServer(item, versionId = currentVersion()?.id, message = "已保存") {
+  return saveEntityToServer(`/api/labor-items/${encodeURIComponent(item.id)}`, { ...item, versionId }, message);
+}
+
+function deleteLaborItemFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/labor-items/${encodeURIComponent(id)}`, message);
+}
+
+function saveLaborCategoryToServer(category, message = "已保存") {
+  if (!category) return Promise.resolve(false);
+  return saveEntityToServer(`/api/labor-categories/${encodeURIComponent(category.id)}`, category, message);
+}
+
+function deleteLaborCategoryFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/labor-categories/${encodeURIComponent(id)}`, message);
+}
+
+function savePriceVersionToServer(version, message = "已保存") {
+  if (!version) return Promise.resolve(false);
+  return saveEntityToServer(`/api/price-versions/${encodeURIComponent(version.id)}`, version, message);
+}
+
+function deletePriceVersionFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/price-versions/${encodeURIComponent(id)}`, message);
+}
+
+function saveCustomerToServer(customer, message = "已保存") {
+  if (!customer) return Promise.resolve(false);
+  return saveEntityToServer(`/api/customers/${encodeURIComponent(customer.id)}`, customer, message);
+}
+
+function deleteCustomerFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/customers/${encodeURIComponent(id)}`, message);
+}
+
+function savePackageToServer(packageEntry, message = "已保存") {
+  if (!packageEntry) return Promise.resolve(false);
+  return saveEntityToServer(`/api/packages/${encodeURIComponent(packageEntry.id)}`, packageEntry, message);
+}
+
+function deletePackageFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/packages/${encodeURIComponent(id)}`, message);
+}
+
+function savePackageSectionToServer(section, packageEntry = currentPackage(), message = "已保存") {
+  if (!section || !packageEntry) return Promise.resolve(false);
+  return saveEntityToServer(`/api/package-sections/${encodeURIComponent(section.id)}`, {
+    ...section,
+    packageId: packageEntry.id,
+    sortOrder: packageEntry.sections?.findIndex((entry) => entry.id === section.id) ?? section.sortOrder ?? 0
+  }, message);
+}
+
+function deletePackageSectionFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/package-sections/${encodeURIComponent(id)}`, message);
+}
+
+function savePackageSectionItemToServer(item, section = packageSectionForItem(item), message = "已保存") {
+  if (!item || !section) return Promise.resolve(false);
+  return saveEntityToServer(`/api/package-section-items/${encodeURIComponent(item.id)}`, {
+    ...item,
+    sectionId: section.id,
+    sortOrder: section.items?.findIndex((entry) => entry.id === item.id) ?? item.sortOrder ?? 0
+  }, message);
+}
+
+function deletePackageSectionItemFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/package-section-items/${encodeURIComponent(id)}`, message);
+}
+
+function savePackageEstimateToServer(estimate, packageEntry = currentPackage(), message = "已保存") {
+  if (!estimate || !packageEntry) return Promise.resolve(false);
+  return saveEntityToServer(`/api/package-estimates/${encodeURIComponent(estimate.id)}`, {
+    ...estimate,
+    packageId: packageEntry.id,
+    sortOrder: packageEntry.estimates?.findIndex((entry) => entry.id === estimate.id) ?? estimate.sortOrder ?? 0
+  }, message);
+}
+
+function deletePackageEstimateFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/package-estimates/${encodeURIComponent(id)}`, message);
+}
+
+function savePackageEstimateGroupToServer(group, estimate = packageEstimateForGroup(group), message = "已保存") {
+  if (!group || !estimate) return Promise.resolve(false);
+  return saveEntityToServer(`/api/package-estimate-groups/${encodeURIComponent(group.id)}`, {
+    ...group,
+    estimateId: estimate.id,
+    sortOrder: estimate.groups?.findIndex((entry) => entry.id === group.id) ?? group.sortOrder ?? 0
+  }, message);
+}
+
+function deletePackageEstimateGroupFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/package-estimate-groups/${encodeURIComponent(id)}`, message);
+}
+
+function savePackageEstimateItemToServer(item, estimate = packageEstimateForItem(item), message = "已保存") {
+  if (!item || !estimate) return Promise.resolve(false);
+  return saveEntityToServer(`/api/package-estimate-items/${encodeURIComponent(item.id)}`, {
+    ...item,
+    estimateId: estimate.id,
+    sortOrder: estimate.items?.findIndex((entry) => entry.id === item.id) ?? item.sortOrder ?? 0
+  }, message);
+}
+
+function deletePackageEstimateItemFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/package-estimate-items/${encodeURIComponent(id)}`, message);
+}
+
+async function savePackageTreeToServer(packageEntry, message = "已保存") {
+  if (!packageEntry) return false;
+  await savePackageToServer(packageEntry, message);
+  for (const section of packageEntry.sections || []) {
+    await savePackageSectionToServer(section, packageEntry, message);
+    for (const item of section.items || []) await savePackageSectionItemToServer(item, section, message);
+  }
+  for (const estimate of packageEntry.estimates || []) {
+    await savePackageEstimateToServer(estimate, packageEntry, message);
+    for (const group of estimate.groups || []) await savePackageEstimateGroupToServer(group, estimate, message);
+    for (const item of estimate.items || []) await savePackageEstimateItemToServer(item, estimate, message);
+  }
+  return true;
+}
+
+function saveTemplateToServer(template, message = "已保存") {
+  if (!template) return Promise.resolve(false);
+  return saveEntityToServer(`/api/templates/${encodeURIComponent(template.id)}`, template, message);
+}
+
+function deleteTemplateFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/templates/${encodeURIComponent(id)}`, message);
+}
+
+function saveTemplateItemToServer(item, template = templateForItem(item), message = "已保存") {
+  if (!item || !template) return Promise.resolve(false);
+  return saveEntityToServer(`/api/template-items/${encodeURIComponent(item.id)}`, {
+    ...item,
+    templateId: template.id,
+    sortOrder: template.items?.findIndex((entry) => entry.id === item.id) ?? item.sortOrder ?? 0
+  }, message);
+}
+
+function deleteTemplateItemFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/template-items/${encodeURIComponent(id)}`, message);
+}
+
+function saveQuoteToServer(quote = currentQuote(), message = "已保存") {
+  if (!quote) return Promise.resolve(false);
+  return saveEntityToServer(`/api/quotes/${encodeURIComponent(quote.id)}`, quote, message);
+}
+
+function deleteQuoteFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/quotes/${encodeURIComponent(id)}`, message);
+}
+
+function saveProjectGroupToServer(group, quote = currentQuote(), message = "已保存") {
+  if (!group || !quote) return Promise.resolve(false);
+  return saveEntityToServer(`/api/project-groups/${encodeURIComponent(group.id)}`, {
+    ...group,
+    quoteId: quote.id,
+    sortOrder: quote.spaces?.findIndex((entry) => entry.id === group.id) ?? group.sortOrder ?? 0
+  }, message);
+}
+
+function deleteProjectGroupFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/project-groups/${encodeURIComponent(id)}`, message);
+}
+
+function saveQuoteItemToServer(line, quote = currentQuote(), message = "已保存") {
+  return saveEntityToServer(`/api/quote-items/${encodeURIComponent(line.id)}`, {
+    ...line,
+    quoteId: quote?.id,
+    sortOrder: quote?.lines?.findIndex((entry) => entry.id === line.id) ?? line.sortOrder ?? 0
+  }, message);
+}
+
+function deleteQuoteItemFromServer(id, message = "已保存") {
+  return deleteEntityFromServer(`/api/quote-items/${encodeURIComponent(id)}`, message);
+}
+
+function saveUiStatePatch(patch, message = "已保存") {
+  saveEntityToServer("/api/app-state", patch, message);
+}
+
+async function deleteEntityFromServer(url, message = "已保存") {
+  if (state.loadBlocked) {
+    if (els.saveStatus) els.saveStatus.textContent = "数据未载入，已阻止保存，避免覆盖 SQLite。";
+    return false;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    const response = await fetch(url, { method: "DELETE" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (els.saveStatus) {
+      els.saveStatus.textContent = `${message} · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+    }
+    return true;
+  } catch (error) {
+    console.warn("Partial delete failed", error);
+    if (els.saveStatus) {
+      els.saveStatus.textContent = `删除保存失败，请确认 Node 服务正在运行 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+    }
+    return false;
+  }
+}
+
+async function saveEntityToServer(url, data, message = "已保存", options = {}) {
+  if (state.loadBlocked) {
+    if (els.saveStatus) els.saveStatus.textContent = "数据未载入，已阻止保存，避免覆盖 SQLite。";
+    return false;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (els.saveStatus) {
+    els.saveStatus.textContent = `${options.immediate ? "正在保存" : message} · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  if (options.immediate && serverSaveInFlight) {
+    while (serverSaveInFlight) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+  }
+  if (pendingServerSaveBody) {
+    pendingServerSaveBody = JSON.stringify(getPortableState(), null, 2);
+  }
+  try {
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (els.saveStatus) {
+      els.saveStatus.textContent = `${message} · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+    }
+    return true;
+  } catch (error) {
+    console.warn("Partial save failed", error);
+    if (els.saveStatus) {
+      els.saveStatus.textContent = `保存失败，请确认 Node 服务正在运行 · ${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`;
+    }
+    if (options.fallbackFullSave) saveState(message);
+    return false;
+  }
+}
+
+async function saveStateToServer(options = {}) {
   if (location.protocol === "file:") {
     if (els.saveStatus) {
       els.saveStatus.textContent = "当前是文件方式打开，不会写入 SQLite；请用 http://127.0.0.1:5177 打开";
     }
-    return;
+    return false;
   }
   pendingServerSaveBody = JSON.stringify(getPortableState(), null, 2);
-  if (serverSaveInFlight) return;
+  if (serverSaveInFlight) {
+    if (!options.immediate) return false;
+    while (serverSaveInFlight) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    return !pendingServerSaveBody;
+  }
   serverSaveInFlight = true;
   let activeServerSaveBody = "";
+  let saved = false;
   try {
     while (pendingServerSaveBody) {
       const body = pendingServerSaveBody;
@@ -6762,6 +7442,7 @@ async function saveStateToServer() {
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       activeServerSaveBody = "";
+      saved = true;
     }
   } catch (error) {
     if (activeServerSaveBody && !pendingServerSaveBody) pendingServerSaveBody = activeServerSaveBody;
@@ -6771,6 +7452,7 @@ async function saveStateToServer() {
     serverSaveInFlight = false;
     if (pendingServerSaveBody) saveStateToServer();
   }
+  return saved;
 }
 
 function flushServerSaveBeforeUnload() {

@@ -25,6 +25,7 @@ const APP_STATE_FIELDS = [
   ["activePage", "manager"],
   ["categoryLibraryCollapsed", true, (value) => value !== "false"],
   ["genericMaterialLibraryCollapsed", true, (value) => value !== "false"],
+  ["genericMaterialCategoryState", {}, parseJsonAppState, stringifyJsonAppState],
   ["supplierMaterialLibraryCollapsed", false, (value) => value === "true"],
   ["activeCustomerId", ""],
   ["activeQuoteId", ""],
@@ -37,6 +38,19 @@ const APP_STATE_FIELDS = [
   ["returnToTemplateId", ""],
   ["returnToTemplateItemId", ""]
 ];
+
+function parseJsonAppState(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function stringifyJsonAppState(value) {
+  return JSON.stringify(value && typeof value === "object" ? value : {});
+}
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -66,6 +80,146 @@ async function handleRequest(req, res) {
     }
     if (url.pathname === "/api/data" && req.method === "POST") {
       await handlePostData(req, res);
+      return;
+    }
+    if (url.pathname.startsWith("/api/material-kinds/") && req.method === "PATCH") {
+      await handlePatchMaterialKind(req, res, decodeURIComponent(url.pathname.replace("/api/material-kinds/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/material-kinds/") && req.method === "DELETE") {
+      handleDeleteMaterialKind(res, decodeURIComponent(url.pathname.replace("/api/material-kinds/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/materials/") && req.method === "PATCH") {
+      await handlePatchMaterial(req, res, decodeURIComponent(url.pathname.replace("/api/materials/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/materials/") && req.method === "DELETE") {
+      handleDeleteMaterial(res, decodeURIComponent(url.pathname.replace("/api/materials/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/labor-items/") && req.method === "PATCH") {
+      await handlePatchLaborItem(req, res, decodeURIComponent(url.pathname.replace("/api/labor-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/labor-items/") && req.method === "DELETE") {
+      handleDeleteLaborItem(res, decodeURIComponent(url.pathname.replace("/api/labor-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/labor-categories/") && req.method === "PATCH") {
+      await handlePatchLaborCategory(req, res, decodeURIComponent(url.pathname.replace("/api/labor-categories/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/labor-categories/") && req.method === "DELETE") {
+      handleDeleteLaborCategory(res, decodeURIComponent(url.pathname.replace("/api/labor-categories/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/price-versions/") && req.method === "PATCH") {
+      await handlePatchPriceVersion(req, res, decodeURIComponent(url.pathname.replace("/api/price-versions/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/price-versions/") && req.method === "DELETE") {
+      handleDeletePriceVersion(res, decodeURIComponent(url.pathname.replace("/api/price-versions/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/customers/") && req.method === "PATCH") {
+      await handlePatchCustomer(req, res, decodeURIComponent(url.pathname.replace("/api/customers/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/customers/") && req.method === "DELETE") {
+      handleDeleteCustomer(res, decodeURIComponent(url.pathname.replace("/api/customers/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/packages/") && req.method === "PATCH") {
+      await handlePatchPackage(req, res, decodeURIComponent(url.pathname.replace("/api/packages/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/packages/") && req.method === "DELETE") {
+      handleDeletePackage(res, decodeURIComponent(url.pathname.replace("/api/packages/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-sections/") && req.method === "PATCH") {
+      await handlePatchPackageSection(req, res, decodeURIComponent(url.pathname.replace("/api/package-sections/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-sections/") && req.method === "DELETE") {
+      handleDeletePackageSection(res, decodeURIComponent(url.pathname.replace("/api/package-sections/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-section-items/") && req.method === "PATCH") {
+      await handlePatchPackageSectionItem(req, res, decodeURIComponent(url.pathname.replace("/api/package-section-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-section-items/") && req.method === "DELETE") {
+      handleDeletePackageSectionItem(res, decodeURIComponent(url.pathname.replace("/api/package-section-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-estimates/") && req.method === "PATCH") {
+      await handlePatchPackageEstimate(req, res, decodeURIComponent(url.pathname.replace("/api/package-estimates/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-estimates/") && req.method === "DELETE") {
+      handleDeletePackageEstimate(res, decodeURIComponent(url.pathname.replace("/api/package-estimates/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-estimate-groups/") && req.method === "PATCH") {
+      await handlePatchPackageEstimateGroup(req, res, decodeURIComponent(url.pathname.replace("/api/package-estimate-groups/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-estimate-groups/") && req.method === "DELETE") {
+      handleDeletePackageEstimateGroup(res, decodeURIComponent(url.pathname.replace("/api/package-estimate-groups/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-estimate-items/") && req.method === "PATCH") {
+      await handlePatchPackageEstimateItem(req, res, decodeURIComponent(url.pathname.replace("/api/package-estimate-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/package-estimate-items/") && req.method === "DELETE") {
+      handleDeletePackageEstimateItem(res, decodeURIComponent(url.pathname.replace("/api/package-estimate-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/templates/") && req.method === "PATCH") {
+      await handlePatchTemplate(req, res, decodeURIComponent(url.pathname.replace("/api/templates/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/templates/") && req.method === "DELETE") {
+      handleDeleteTemplate(res, decodeURIComponent(url.pathname.replace("/api/templates/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/template-items/") && req.method === "PATCH") {
+      await handlePatchTemplateItem(req, res, decodeURIComponent(url.pathname.replace("/api/template-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/template-items/") && req.method === "DELETE") {
+      handleDeleteTemplateItem(res, decodeURIComponent(url.pathname.replace("/api/template-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/quotes/") && req.method === "PATCH") {
+      await handlePatchQuote(req, res, decodeURIComponent(url.pathname.replace("/api/quotes/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/quotes/") && req.method === "DELETE") {
+      handleDeleteQuote(res, decodeURIComponent(url.pathname.replace("/api/quotes/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/project-groups/") && req.method === "PATCH") {
+      await handlePatchProjectGroup(req, res, decodeURIComponent(url.pathname.replace("/api/project-groups/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/project-groups/") && req.method === "DELETE") {
+      handleDeleteProjectGroup(res, decodeURIComponent(url.pathname.replace("/api/project-groups/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/quote-items/") && req.method === "PATCH") {
+      await handlePatchQuoteItem(req, res, decodeURIComponent(url.pathname.replace("/api/quote-items/", "")));
+      return;
+    }
+    if (url.pathname.startsWith("/api/quote-items/") && req.method === "DELETE") {
+      handleDeleteQuoteItem(res, decodeURIComponent(url.pathname.replace("/api/quote-items/", "")));
+      return;
+    }
+    if (url.pathname === "/api/app-state" && req.method === "PATCH") {
+      await handlePatchAppState(req, res);
       return;
     }
     if (url.pathname === "/api/backup" && req.method === "POST") {
@@ -174,6 +328,7 @@ function initializeDatabase() {
       id TEXT PRIMARY KEY,
       sort_order INTEGER NOT NULL DEFAULT 0,
       name TEXT NOT NULL UNIQUE,
+      library_category TEXT,
       primary_category TEXT,
       unit TEXT,
       cost_unit_price REAL DEFAULT 0,
@@ -416,6 +571,7 @@ function initializeDatabase() {
   ensureColumn("materials", "pricing_formula", "TEXT");
   ensureColumn("materials", "note", "TEXT");
   ensureColumn("material_kinds", "cost_unit_price", "REAL DEFAULT 0");
+  ensureColumn("material_kinds", "library_category", "TEXT");
   ensureColumn("material_kinds", "quote_unit_price", "REAL DEFAULT 0");
   ensureColumn("material_kinds", "calc_cost_area", "REAL DEFAULT 0");
   ensureColumn("material_kinds", "calc_cost_price", "REAL DEFAULT 0");
@@ -719,6 +875,918 @@ async function handlePostData(req, res) {
   sendJson(res, 200, { ok: true, path: sqliteFile });
 }
 
+async function readJsonRequest(req, res) {
+  const body = await readBody(req);
+  try {
+    return JSON.parse(body || "{}");
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return null;
+  }
+}
+
+async function handlePatchMaterialKind(req, res, id) {
+  const kind = await readJsonRequest(req, res);
+  if (!kind) return;
+  const materialKindId = normalizedText(id || kind.id);
+  if (!materialKindId) {
+    sendJson(res, 400, { error: "Missing material kind id" });
+    return;
+  }
+  const name = normalizedText(kind.name);
+  if (!name) {
+    sendJson(res, 400, { error: "Missing material kind name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO material_kinds (
+      id, sort_order, name, library_category, primary_category, unit, cost_unit_price, quote_unit_price,
+      calc_cost_area, calc_cost_price, calc_quote_area, calc_quote_price, match_group, note
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      sort_order = excluded.sort_order,
+      name = excluded.name,
+      library_category = excluded.library_category,
+      primary_category = excluded.primary_category,
+      unit = excluded.unit,
+      cost_unit_price = excluded.cost_unit_price,
+      quote_unit_price = excluded.quote_unit_price,
+      calc_cost_area = excluded.calc_cost_area,
+      calc_cost_price = excluded.calc_cost_price,
+      calc_quote_area = excluded.calc_quote_area,
+      calc_quote_price = excluded.calc_quote_price,
+      note = excluded.note
+  `).run(
+    materialKindId,
+    normalizedSortOrder(kind, 0),
+    name,
+    normalizedText(kind.libraryCategory || kind.managementCategory || kind.library_category || kind.primaryCategory || kind.category || "未分类"),
+    normalizedText(kind.primaryCategory || kind.category),
+    normalizedText(kind.unit),
+    toNumber(kind.costUnitPrice),
+    toNumber(kind.quoteUnitPrice ?? kind.unitPrice),
+    toNumber(kind.calcCostArea),
+    toNumber(kind.calcCostPrice),
+    toNumber(kind.calcQuoteArea),
+    toNumber(kind.calcQuotePrice),
+    "",
+    normalizedText(kind.note)
+  );
+  sendJson(res, 200, { ok: true, materialKind: db.prepare("SELECT id, name, cost_unit_price AS costUnitPrice, quote_unit_price AS quoteUnitPrice FROM material_kinds WHERE id = ?").get(materialKindId) });
+}
+
+function handleDeleteMaterialKind(res, id) {
+  const materialKindId = normalizedText(id);
+  if (!materialKindId) {
+    sendJson(res, 400, { error: "Missing material kind id" });
+    return;
+  }
+  db.prepare("DELETE FROM material_kinds WHERE id = ?").run(materialKindId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchMaterial(req, res, id) {
+  const material = await readJsonRequest(req, res);
+  if (!material) return;
+  const materialId = normalizedText(id || material.id);
+  if (!materialId) {
+    sendJson(res, 400, { error: "Missing material id" });
+    return;
+  }
+  const name = normalizedText(material.name);
+  if (!name) {
+    sendJson(res, 400, { error: "Missing material name" });
+    return;
+  }
+  const primaryCategory = normalizedText(material.primaryCategory || material.category);
+  const quoteUnitPrice = material.quoteUnitPrice ?? material.unitPrice;
+  db.prepare(`
+    INSERT INTO materials (
+      id, sort_order, name, material_kind_id, category, primary_category, secondary_category, spec, unit,
+      cost_unit_price, unit_price, quote_unit_price, conversion_unit, conversion_quantity,
+      calc_cost_area, calc_cost_price, calc_quote_area, calc_quote_price,
+      brand, supplier, pricing_formula, note
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      sort_order = excluded.sort_order,
+      name = excluded.name,
+      material_kind_id = excluded.material_kind_id,
+      category = excluded.category,
+      primary_category = excluded.primary_category,
+      secondary_category = excluded.secondary_category,
+      spec = excluded.spec,
+      unit = excluded.unit,
+      cost_unit_price = excluded.cost_unit_price,
+      unit_price = excluded.unit_price,
+      quote_unit_price = excluded.quote_unit_price,
+      conversion_unit = excluded.conversion_unit,
+      conversion_quantity = excluded.conversion_quantity,
+      calc_cost_area = excluded.calc_cost_area,
+      calc_cost_price = excluded.calc_cost_price,
+      calc_quote_area = excluded.calc_quote_area,
+      calc_quote_price = excluded.calc_quote_price,
+      brand = excluded.brand,
+      supplier = excluded.supplier,
+      pricing_formula = excluded.pricing_formula,
+      note = excluded.note
+  `).run(
+    materialId,
+    normalizedSortOrder(material, 0),
+    name,
+    normalizedText(material.materialKindId),
+    primaryCategory,
+    primaryCategory,
+    normalizedText(material.secondaryCategory),
+    normalizedText(material.spec),
+    normalizedText(material.unit),
+    toNumber(material.costUnitPrice),
+    toNumber(quoteUnitPrice),
+    toNumber(quoteUnitPrice),
+    normalizedText(material.conversionUnit),
+    toNumber(material.conversionQuantity),
+    toNumber(material.calcCostArea),
+    toNumber(material.calcCostPrice),
+    toNumber(material.calcQuoteArea),
+    toNumber(material.calcQuotePrice),
+    normalizedText(material.brand),
+    normalizedText(material.supplier),
+    normalizedText(material.pricingFormula),
+    normalizedText(material.note)
+  );
+  sendJson(res, 200, { ok: true, material: db.prepare("SELECT id, name, cost_unit_price AS costUnitPrice, quote_unit_price AS quoteUnitPrice FROM materials WHERE id = ?").get(materialId) });
+}
+
+function handleDeleteMaterial(res, id) {
+  const materialId = normalizedText(id);
+  if (!materialId) {
+    sendJson(res, 400, { error: "Missing material id" });
+    return;
+  }
+  db.prepare("DELETE FROM materials WHERE id = ?").run(materialId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchLaborItem(req, res, id) {
+  const item = await readJsonRequest(req, res);
+  if (!item) return;
+  const itemId = normalizedText(id || item.id);
+  const versionId = normalizedText(item.versionId);
+  const name = normalizedText(item.name);
+  if (!itemId || !versionId || !name) {
+    sendJson(res, 400, { error: "Missing labor item id, versionId, or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO labor_items (
+      id, version_id, sort_order, name, unit, family, aliases, category, category_id, description, material, auxiliary, waste_rate, labor,
+      cost_material, cost_auxiliary, cost_waste_rate, cost_labor, unit_price, cost_unit_price, quantity_formula,
+      quantity_round_down, uses_material, material_category, material_subcategory, default_material_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      version_id = excluded.version_id,
+      sort_order = excluded.sort_order,
+      name = excluded.name,
+      unit = excluded.unit,
+      family = excluded.family,
+      aliases = excluded.aliases,
+      category = excluded.category,
+      category_id = excluded.category_id,
+      description = excluded.description,
+      material = excluded.material,
+      auxiliary = excluded.auxiliary,
+      waste_rate = excluded.waste_rate,
+      labor = excluded.labor,
+      cost_material = excluded.cost_material,
+      cost_auxiliary = excluded.cost_auxiliary,
+      cost_waste_rate = excluded.cost_waste_rate,
+      cost_labor = excluded.cost_labor,
+      unit_price = excluded.unit_price,
+      cost_unit_price = excluded.cost_unit_price,
+      quantity_formula = excluded.quantity_formula,
+      quantity_round_down = excluded.quantity_round_down,
+      uses_material = excluded.uses_material,
+      material_category = excluded.material_category,
+      material_subcategory = excluded.material_subcategory,
+      default_material_id = excluded.default_material_id
+  `).run(
+    itemId,
+    versionId,
+    normalizedSortOrder(item, 0),
+    name,
+    normalizedText(item.unit),
+    normalizedText(item.family),
+    JSON.stringify(Array.isArray(item.aliases) ? item.aliases : []),
+    normalizedText(item.category),
+    normalizedText(item.categoryId) || null,
+    normalizedText(item.description),
+    toNumber(item.material),
+    toNumber(item.auxiliary),
+    toNumber(item.wasteRate),
+    toNumber(item.labor),
+    toNumber(item.costMaterial),
+    toNumber(item.costAuxiliary),
+    toNumber(item.costWasteRate),
+    toNumber(item.costLabor),
+    toNumber(item.unitPrice),
+    toNumber(item.costUnitPrice),
+    normalizedText(item.quantityFormula || DEFAULT_QUANTITY_FORMULA),
+    sqliteBoolean(item.quantityRoundDown),
+    sqliteBoolean(item.usesMaterial),
+    normalizedText(item.materialCategory),
+    normalizedText(item.materialSubcategory),
+    normalizedText(item.defaultMaterialId)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteLaborItem(res, id) {
+  const itemId = normalizedText(id);
+  if (!itemId) {
+    sendJson(res, 400, { error: "Missing labor item id" });
+    return;
+  }
+  db.prepare("DELETE FROM labor_items WHERE id = ?").run(itemId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchLaborCategory(req, res, id) {
+  const category = await readJsonRequest(req, res);
+  if (!category) return;
+  const categoryId = normalizedText(id || category.id);
+  const name = normalizedText(category.name);
+  if (!categoryId || !name) {
+    sendJson(res, 400, { error: "Missing labor category id or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO labor_categories (id, name, description, sort_order)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      description = excluded.description,
+      sort_order = excluded.sort_order
+  `).run(
+    categoryId,
+    name,
+    normalizedText(category.description),
+    normalizedSortOrder(category, 0)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteLaborCategory(res, id) {
+  const categoryId = normalizedText(id);
+  if (!categoryId) {
+    sendJson(res, 400, { error: "Missing labor category id" });
+    return;
+  }
+  db.prepare("DELETE FROM labor_categories WHERE id = ?").run(categoryId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchPriceVersion(req, res, id) {
+  const version = await readJsonRequest(req, res);
+  if (!version) return;
+  const versionId = normalizedText(id || version.id);
+  const name = normalizedText(version.name);
+  if (!versionId || !name) {
+    sendJson(res, 400, { error: "Missing price version id or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO price_versions (id, name, created_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      created_at = excluded.created_at
+  `).run(
+    versionId,
+    name,
+    normalizedText(version.createdAt)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeletePriceVersion(res, id) {
+  const versionId = normalizedText(id);
+  if (!versionId) {
+    sendJson(res, 400, { error: "Missing price version id" });
+    return;
+  }
+  db.prepare("DELETE FROM price_versions WHERE id = ?").run(versionId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchCustomer(req, res, id) {
+  const customer = await readJsonRequest(req, res);
+  if (!customer) return;
+  const customerId = normalizedText(id || customer.id);
+  const name = normalizedText(customer.name);
+  if (!customerId || !name) {
+    sendJson(res, 400, { error: "Missing customer id or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO customers (id, name, contact, phone, address)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      contact = excluded.contact,
+      phone = excluded.phone,
+      address = excluded.address
+  `).run(
+    customerId,
+    name,
+    normalizedText(customer.contact),
+    normalizedText(customer.phone),
+    normalizedText(customer.address)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteCustomer(res, id) {
+  const customerId = normalizedText(id);
+  if (!customerId) {
+    sendJson(res, 400, { error: "Missing customer id" });
+    return;
+  }
+  db.prepare("DELETE FROM customers WHERE id = ?").run(customerId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchPackage(req, res, id) {
+  const entry = await readJsonRequest(req, res);
+  if (!entry) return;
+  const packageId = normalizedText(id || entry.id);
+  const name = normalizedText(entry.name);
+  if (!packageId || !name) {
+    sendJson(res, 400, { error: "Missing package id or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO packages (
+      id, name, unit, quote_unit_price, cost_target_rate, quantity_formula, description, exclusion_note, sort_order, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      unit = excluded.unit,
+      quote_unit_price = excluded.quote_unit_price,
+      cost_target_rate = excluded.cost_target_rate,
+      quantity_formula = excluded.quantity_formula,
+      description = excluded.description,
+      exclusion_note = excluded.exclusion_note,
+      sort_order = excluded.sort_order,
+      collapsed = excluded.collapsed
+  `).run(
+    packageId,
+    name,
+    normalizedText(entry.unit),
+    toNumber(entry.quoteUnitPrice),
+    toNumber(entry.costTargetRate),
+    normalizedText(entry.quantityFormula || "q=buildingArea"),
+    normalizedText(entry.description),
+    normalizedText(entry.exclusionNote),
+    normalizedSortOrder(entry, 0),
+    sqliteBoolean(entry.collapsed)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeletePackage(res, id) {
+  const packageId = normalizedText(id);
+  if (!packageId) {
+    sendJson(res, 400, { error: "Missing package id" });
+    return;
+  }
+  db.prepare("DELETE FROM packages WHERE id = ?").run(packageId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchPackageSection(req, res, id) {
+  const section = await readJsonRequest(req, res);
+  if (!section) return;
+  const sectionId = normalizedText(id || section.id);
+  const packageId = normalizedText(section.packageId);
+  const name = normalizedText(section.name);
+  if (!sectionId || !packageId || !name) {
+    sendJson(res, 400, { error: "Missing package section id, packageId, or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO package_sections (id, package_id, name, sort_order, collapsed)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      package_id = excluded.package_id,
+      name = excluded.name,
+      sort_order = excluded.sort_order,
+      collapsed = excluded.collapsed
+  `).run(
+    sectionId,
+    packageId,
+    name,
+    normalizedSortOrder(section, 0),
+    sqliteBoolean(section.collapsed)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeletePackageSection(res, id) {
+  const sectionId = normalizedText(id);
+  if (!sectionId) {
+    sendJson(res, 400, { error: "Missing package section id" });
+    return;
+  }
+  db.prepare("DELETE FROM package_sections WHERE id = ?").run(sectionId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchPackageSectionItem(req, res, id) {
+  const item = await readJsonRequest(req, res);
+  if (!item) return;
+  const itemId = normalizedText(id || item.id);
+  const sectionId = normalizedText(item.sectionId);
+  if (!itemId || !sectionId) {
+    sendJson(res, 400, { error: "Missing package section item id or sectionId" });
+    return;
+  }
+  const sourceType = item.sourceType === "material" ? "material" : "labor";
+  db.prepare(`
+    INSERT INTO package_section_items (
+      id, section_id, sort_order, source_type, name, item_name, material_kind_id, material_id,
+      material_category, unit, provider, area, description
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      section_id = excluded.section_id,
+      sort_order = excluded.sort_order,
+      source_type = excluded.source_type,
+      name = excluded.name,
+      item_name = excluded.item_name,
+      material_kind_id = excluded.material_kind_id,
+      material_id = excluded.material_id,
+      material_category = excluded.material_category,
+      unit = excluded.unit,
+      provider = excluded.provider,
+      area = excluded.area,
+      description = excluded.description
+  `).run(
+    itemId,
+    sectionId,
+    normalizedSortOrder(item, 0),
+    sourceType,
+    normalizedText(item.name),
+    normalizedText(item.itemName || item.name),
+    normalizedText(item.materialKindId),
+    normalizedText(item.materialId),
+    normalizedText(item.materialCategory),
+    normalizedText(item.unit),
+    normalizedText(item.provider || item.area),
+    normalizedText(item.area || item.provider),
+    normalizedText(item.description)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeletePackageSectionItem(res, id) {
+  const itemId = normalizedText(id);
+  if (!itemId) {
+    sendJson(res, 400, { error: "Missing package section item id" });
+    return;
+  }
+  db.prepare("DELETE FROM package_section_items WHERE id = ?").run(itemId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchPackageEstimate(req, res, id) {
+  const estimate = await readJsonRequest(req, res);
+  if (!estimate) return;
+  const estimateId = normalizedText(id || estimate.id);
+  const packageId = normalizedText(estimate.packageId);
+  const name = normalizedText(estimate.name);
+  if (!estimateId || !packageId || !name) {
+    sendJson(res, 400, { error: "Missing package estimate id, packageId, or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO package_estimates (
+      id, package_id, name, building_area, area, perimeter, height, quote_unit_price, sort_order, active
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      package_id = excluded.package_id,
+      name = excluded.name,
+      building_area = excluded.building_area,
+      area = excluded.area,
+      perimeter = excluded.perimeter,
+      height = excluded.height,
+      quote_unit_price = excluded.quote_unit_price,
+      sort_order = excluded.sort_order,
+      active = excluded.active
+  `).run(
+    estimateId,
+    packageId,
+    name,
+    toNumber(estimate.buildingArea),
+    toNumber(estimate.area),
+    toNumber(estimate.perimeter),
+    toNumber(estimate.height),
+    toNumber(estimate.quoteUnitPrice),
+    normalizedSortOrder(estimate, 0),
+    sqliteBoolean(estimate.active)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeletePackageEstimate(res, id) {
+  const estimateId = normalizedText(id);
+  if (!estimateId) {
+    sendJson(res, 400, { error: "Missing package estimate id" });
+    return;
+  }
+  db.prepare("DELETE FROM package_estimates WHERE id = ?").run(estimateId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchPackageEstimateGroup(req, res, id) {
+  const group = await readJsonRequest(req, res);
+  if (!group) return;
+  const groupId = normalizedText(id || group.id);
+  const estimateId = normalizedText(group.estimateId);
+  const name = normalizedText(group.name);
+  if (!groupId || !estimateId || !name) {
+    sendJson(res, 400, { error: "Missing package estimate group id, estimateId, or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO package_estimate_groups (
+      id, estimate_id, package_section_id, name, icon_key, count, area, perimeter, height, collapsed, sort_order
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      estimate_id = excluded.estimate_id,
+      package_section_id = excluded.package_section_id,
+      name = excluded.name,
+      icon_key = excluded.icon_key,
+      count = excluded.count,
+      area = excluded.area,
+      perimeter = excluded.perimeter,
+      height = excluded.height,
+      collapsed = excluded.collapsed,
+      sort_order = excluded.sort_order
+  `).run(
+    groupId,
+    estimateId,
+    normalizedText(group.packageSectionId),
+    name,
+    normalizedText(group.iconKey),
+    toNumber(group.count ?? 1),
+    toNumber(group.area),
+    toNumber(group.perimeter),
+    toNumber(group.height),
+    sqliteBoolean(group.collapsed),
+    normalizedSortOrder(group, 0)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeletePackageEstimateGroup(res, id) {
+  const groupId = normalizedText(id);
+  if (!groupId) {
+    sendJson(res, 400, { error: "Missing package estimate group id" });
+    return;
+  }
+  db.prepare("DELETE FROM package_estimate_groups WHERE id = ?").run(groupId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchPackageEstimateItem(req, res, id) {
+  const item = await readJsonRequest(req, res);
+  if (!item) return;
+  const itemId = normalizedText(id || item.id);
+  const estimateId = normalizedText(item.estimateId);
+  if (!itemId || !estimateId) {
+    sendJson(res, 400, { error: "Missing package estimate item id or estimateId" });
+    return;
+  }
+  const sourceType = item.sourceType === "material" ? "material" : "labor";
+  db.prepare(`
+    INSERT INTO package_estimate_items (
+      id, estimate_id, group_id, package_section_item_id, sort_order, item_type, labor_item_name, material_kind_id, material_id,
+      material_category, area, quantity, included_type
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      estimate_id = excluded.estimate_id,
+      group_id = excluded.group_id,
+      package_section_item_id = excluded.package_section_item_id,
+      sort_order = excluded.sort_order,
+      item_type = excluded.item_type,
+      labor_item_name = excluded.labor_item_name,
+      material_kind_id = excluded.material_kind_id,
+      material_id = excluded.material_id,
+      material_category = excluded.material_category,
+      area = excluded.area,
+      quantity = excluded.quantity,
+      included_type = excluded.included_type
+  `).run(
+    itemId,
+    estimateId,
+    normalizedText(item.groupId) || null,
+    normalizedText(item.packageSectionItemId),
+    normalizedSortOrder(item, 0),
+    sourceType,
+    normalizedText(item.itemName),
+    normalizedText(item.materialKindId),
+    normalizedText(item.materialId),
+    normalizedText(item.materialCategory),
+    normalizedText(item.area),
+    toNumber(item.quantity),
+    normalizedText(item.includedType || "included")
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeletePackageEstimateItem(res, id) {
+  const itemId = normalizedText(id);
+  if (!itemId) {
+    sendJson(res, 400, { error: "Missing package estimate item id" });
+    return;
+  }
+  db.prepare("DELETE FROM package_estimate_items WHERE id = ?").run(itemId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchTemplate(req, res, id) {
+  const template = await readJsonRequest(req, res);
+  if (!template) return;
+  const templateId = normalizedText(id || template.id);
+  const name = normalizedText(template.name);
+  if (!templateId || !name) {
+    sendJson(res, 400, { error: "Missing template id or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO project_group_templates (id, name, icon_key, sort_order, collapsed, library_order_applied)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      icon_key = excluded.icon_key,
+      sort_order = excluded.sort_order,
+      collapsed = excluded.collapsed,
+      library_order_applied = excluded.library_order_applied
+  `).run(
+    templateId,
+    name,
+    normalizedText(template.iconKey),
+    normalizedSortOrder(template, 0),
+    sqliteBoolean(template.collapsed),
+    sqliteBoolean(template.libraryOrderApplied !== false)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteTemplate(res, id) {
+  const templateId = normalizedText(id);
+  if (!templateId) {
+    sendJson(res, 400, { error: "Missing template id" });
+    return;
+  }
+  db.prepare("DELETE FROM project_group_templates WHERE id = ?").run(templateId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchTemplateItem(req, res, id) {
+  const item = await readJsonRequest(req, res);
+  if (!item) return;
+  const itemId = normalizedText(id || item.id);
+  const templateId = normalizedText(item.templateId);
+  if (!itemId || !templateId) {
+    sendJson(res, 400, { error: "Missing template item id or templateId" });
+    return;
+  }
+  const sourceType = item.sourceType === "material" ? "material" : "labor";
+  db.prepare(`
+    INSERT INTO project_group_template_items (
+      id, template_id, sort_order, item_type, item_name, material_kind_id, material_id, material_category, area, quantity
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      template_id = excluded.template_id,
+      sort_order = excluded.sort_order,
+      item_type = excluded.item_type,
+      item_name = excluded.item_name,
+      material_kind_id = excluded.material_kind_id,
+      material_id = excluded.material_id,
+      material_category = excluded.material_category,
+      area = excluded.area,
+      quantity = excluded.quantity
+  `).run(
+    itemId,
+    templateId,
+    normalizedSortOrder(item, 0),
+    sourceType,
+    normalizedText(item.itemName),
+    normalizedText(item.materialKindId),
+    normalizedText(item.materialId),
+    normalizedText(item.materialCategory),
+    normalizedText(item.area),
+    toNumber(item.quantity)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteTemplateItem(res, id) {
+  const itemId = normalizedText(id);
+  if (!itemId) {
+    sendJson(res, 400, { error: "Missing template item id" });
+    return;
+  }
+  db.prepare("DELETE FROM project_group_template_items WHERE id = ?").run(itemId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchQuote(req, res, id) {
+  const quote = await readJsonRequest(req, res);
+  if (!quote) return;
+  const quoteId = normalizedText(id || quote.id);
+  const customerId = normalizedText(quote.customerId);
+  const name = normalizedText(quote.name || quote.projectName);
+  if (!quoteId || !customerId || !name) {
+    sendJson(res, 400, { error: "Missing quote id, customerId, or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO quotes (
+      id, customer_id, name, project_name, client_name, client_phone, client_address, quote_date,
+      price_version_id, management_rate, design_rate, tax_rate, show_amount_columns
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      customer_id = excluded.customer_id,
+      name = excluded.name,
+      project_name = excluded.project_name,
+      client_name = excluded.client_name,
+      client_phone = excluded.client_phone,
+      client_address = excluded.client_address,
+      quote_date = excluded.quote_date,
+      price_version_id = excluded.price_version_id,
+      management_rate = excluded.management_rate,
+      design_rate = excluded.design_rate,
+      tax_rate = excluded.tax_rate,
+      show_amount_columns = excluded.show_amount_columns
+  `).run(
+    quoteId,
+    customerId,
+    name,
+    normalizedText(quote.projectName || name),
+    normalizedText(quote.clientName),
+    normalizedText(quote.clientPhone),
+    normalizedText(quote.clientAddress),
+    normalizedText(quote.quoteDate),
+    normalizedText(quote.priceVersionId),
+    toNumber(quote.managementRate),
+    toNumber(quote.designRate),
+    toNumber(quote.taxRate),
+    sqliteBoolean(quote.showAmountColumns !== false)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteQuote(res, id) {
+  const quoteId = normalizedText(id);
+  if (!quoteId) {
+    sendJson(res, 400, { error: "Missing quote id" });
+    return;
+  }
+  db.prepare("DELETE FROM quotes WHERE id = ?").run(quoteId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchProjectGroup(req, res, id) {
+  const group = await readJsonRequest(req, res);
+  if (!group) return;
+  const groupId = normalizedText(id || group.id);
+  const quoteId = normalizedText(group.quoteId);
+  const name = normalizedText(group.name);
+  if (!groupId || !quoteId || !name) {
+    sendJson(res, 400, { error: "Missing project group id, quoteId, or name" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO quote_project_groups (
+      id, quote_id, sort_order, name, type, work_type, icon_key, template_id, area, perimeter, height, building_area, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      quote_id = excluded.quote_id,
+      sort_order = excluded.sort_order,
+      name = excluded.name,
+      type = excluded.type,
+      work_type = excluded.work_type,
+      icon_key = excluded.icon_key,
+      template_id = excluded.template_id,
+      area = excluded.area,
+      perimeter = excluded.perimeter,
+      height = excluded.height,
+      building_area = excluded.building_area,
+      collapsed = excluded.collapsed
+  `).run(
+    groupId,
+    quoteId,
+    normalizedSortOrder(group, 0),
+    name,
+    group.type === "overall" ? "overall" : "space",
+    group.workType === "material" ? "material" : "labor",
+    normalizedText(group.iconKey),
+    normalizedText(group.templateId),
+    toNumber(group.area),
+    toNumber(group.perimeter),
+    toNumber(group.height),
+    toNumber(group.buildingArea),
+    sqliteBoolean(group.collapsed)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteProjectGroup(res, id) {
+  const groupId = normalizedText(id);
+  if (!groupId) {
+    sendJson(res, 400, { error: "Missing project group id" });
+    return;
+  }
+  db.prepare("DELETE FROM quote_project_groups WHERE id = ?").run(groupId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchQuoteItem(req, res, id) {
+  const line = await readJsonRequest(req, res);
+  if (!line) return;
+  const lineId = normalizedText(id || line.id);
+  const quoteId = normalizedText(line.quoteId);
+  if (!lineId || !quoteId) {
+    sendJson(res, 400, { error: "Missing quote item id or quoteId" });
+    return;
+  }
+  db.prepare(`
+    INSERT INTO quote_items (
+      id, quote_id, project_group_id, sort_order, engineering_name, labor_item_name, item_type, area, quantity,
+      material_kind_id, material_id, material_category, material, auxiliary, waste_rate, labor, legacy_unit_price, note
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      quote_id = excluded.quote_id,
+      project_group_id = excluded.project_group_id,
+      sort_order = excluded.sort_order,
+      engineering_name = excluded.engineering_name,
+      labor_item_name = excluded.labor_item_name,
+      item_type = excluded.item_type,
+      area = excluded.area,
+      quantity = excluded.quantity,
+      material_kind_id = excluded.material_kind_id,
+      material_id = excluded.material_id,
+      material_category = excluded.material_category,
+      material = excluded.material,
+      auxiliary = excluded.auxiliary,
+      waste_rate = excluded.waste_rate,
+      labor = excluded.labor,
+      legacy_unit_price = excluded.legacy_unit_price,
+      note = excluded.note
+  `).run(
+    lineId,
+    quoteId,
+    normalizedText(line.spaceId) || null,
+    normalizedSortOrder(line, 0),
+    normalizedText(line.engineeringName || line.itemName || line.priceItemName),
+    normalizedText(line.priceItemName || line.itemName),
+    line.sourceType === "material" || line.materialId || line.materialKindId ? "material" : "labor",
+    normalizedText(line.area),
+    toNumber(line.quantity),
+    normalizedText(line.materialKindId),
+    normalizedText(line.materialId),
+    normalizedText(line.materialCategory),
+    toNumber(line.material),
+    toNumber(line.auxiliary),
+    toNumber(line.wasteRate),
+    toNumber(line.labor),
+    line.legacyUnitPrice ?? line.customPrice ?? null,
+    normalizedText(line.note)
+  );
+  sendJson(res, 200, { ok: true });
+}
+
+function handleDeleteQuoteItem(res, id) {
+  const lineId = normalizedText(id);
+  if (!lineId) {
+    sendJson(res, 400, { error: "Missing quote item id" });
+    return;
+  }
+  db.prepare("DELETE FROM quote_items WHERE id = ?").run(lineId);
+  sendJson(res, 200, { ok: true });
+}
+
+async function handlePatchAppState(req, res) {
+  const patch = await readJsonRequest(req, res);
+  if (!patch) return;
+  APP_STATE_FIELDS.forEach(([key, , , saveValue]) => {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) return;
+    const value = saveValue ? saveValue(patch[key]) : patch[key];
+    setAppState(key, value);
+  });
+  sendJson(res, 200, { ok: true });
+}
+
 function hasQuestionMarkEncodingDamage(data) {
   const fields = [];
   const pushText = (value) => {
@@ -1018,6 +2086,7 @@ function loadMaterialKinds() {
       id,
       sort_order AS sortOrder,
       name,
+      library_category AS libraryCategory,
       primary_category AS primaryCategory,
       unit,
       cost_unit_price AS costUnitPrice,
@@ -1193,8 +2262,6 @@ function savePortableState(portable) {
       DELETE FROM package_section_items;
       DELETE FROM package_sections;
       DELETE FROM packages;
-      DELETE FROM materials;
-      DELETE FROM material_kinds;
       DELETE FROM labor_items;
       DELETE FROM labor_categories;
       DELETE FROM price_versions;
@@ -1203,8 +2270,8 @@ function savePortableState(portable) {
     savePersistedUiState(data);
     insertPriceCategories(categories);
     insertPriceVersions(data.versions, categories);
-    insertMaterialKinds(data.materialKinds || []);
-    insertMaterials(data.materials || []);
+    if (!hasRows("material_kinds")) insertMaterialKinds(data.materialKinds || []);
+    if (!hasRows("materials")) insertMaterials(data.materials || []);
     insertTemplates(data.templates || []);
     insertPackages(data.packages || []);
     insertCustomers(data.customers);
@@ -1214,6 +2281,10 @@ function savePortableState(portable) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+function hasRows(tableName) {
+  return db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get().count > 0;
 }
 
 function insertPriceCategories(categories) {
@@ -1335,9 +2406,9 @@ function insertMaterials(materials) {
 function insertMaterialKinds(kinds) {
   const insertKind = db.prepare(`
     INSERT INTO material_kinds (
-      id, sort_order, name, primary_category, unit, cost_unit_price, quote_unit_price,
+      id, sort_order, name, library_category, primary_category, unit, cost_unit_price, quote_unit_price,
       calc_cost_area, calc_cost_price, calc_quote_area, calc_quote_price, match_group, note
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   (kinds || []).forEach((kind, index) => {
     const name = normalizedText(kind?.name);
@@ -1346,6 +2417,7 @@ function insertMaterialKinds(kinds) {
       kind.id || makeId("material-kind"),
       normalizedSortOrder(kind, index),
       name,
+      normalizedText(kind?.libraryCategory || kind?.managementCategory || kind?.library_category || kind?.primaryCategory || kind?.category || "未分类"),
       normalizedText(kind?.primaryCategory || kind?.category),
       normalizedText(kind?.unit),
       toNumber(kind?.costUnitPrice),
@@ -1648,7 +2720,7 @@ function getAppState(key) {
 }
 
 function setAppState(key, value) {
-  db.prepare("INSERT INTO app_state (key, value) VALUES (?, ?)").run(key, String(value ?? ""));
+  db.prepare("INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)").run(key, String(value ?? ""));
 }
 
 async function serveStatic(pathname, res) {
@@ -1662,7 +2734,10 @@ async function serveStatic(pathname, res) {
   try {
     const content = await readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
+    res.writeHead(200, {
+      "Content-Type": mimeTypes[ext] || "application/octet-stream",
+      "Cache-Control": "no-store, max-age=0"
+    });
     res.end(content);
   } catch (error) {
     if (error.code === "ENOENT" || error.code === "EISDIR") {
