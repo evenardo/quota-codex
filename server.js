@@ -354,6 +354,7 @@ function initializeDatabase() {
       sort_order INTEGER NOT NULL DEFAULT 0,
       item_type TEXT DEFAULT 'labor',
       item_name TEXT,
+      display_name TEXT,
       material_kind_id TEXT,
       material_id TEXT,
       material_category TEXT,
@@ -479,6 +480,7 @@ function initializeDatabase() {
       work_type TEXT DEFAULT 'labor',
       icon_key TEXT,
       template_id TEXT,
+      package_id TEXT,
       area REAL DEFAULT 0,
       perimeter REAL DEFAULT 0,
       height REAL DEFAULT 0,
@@ -521,6 +523,7 @@ function initializeDatabase() {
   ensureColumn("quote_project_groups", "work_type", "TEXT DEFAULT 'labor'");
   ensureColumn("quote_project_groups", "icon_key", "TEXT");
   ensureColumn("quote_project_groups", "template_id", "TEXT");
+  ensureColumn("quote_project_groups", "package_id", "TEXT");
   ensureColumn("quote_project_groups", "building_area", "REAL DEFAULT 0");
   ensureColumn("quote_project_groups", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("project_group_templates", "collapsed", "INTEGER DEFAULT 0");
@@ -580,6 +583,7 @@ function initializeDatabase() {
   ensureColumn("quote_items", "material_id", "TEXT");
   ensureColumn("quote_items", "material_kind_id", "TEXT");
   ensureColumn("project_group_template_items", "material_kind_id", "TEXT");
+  ensureColumn("project_group_template_items", "display_name", "TEXT");
   ensureColumn("package_section_items", "material_kind_id", "TEXT");
   ensureColumn("package_estimate_items", "material_kind_id", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS idx_labor_items_category ON labor_items(category_id)");
@@ -691,6 +695,7 @@ function migrateIdsToUuidV7() {
     const packageMap = migrateTextPrimaryKey("packages", "package");
     updateForeignKeys("package_sections", "package_id", packageMap);
     updateForeignKeys("package_estimates", "package_id", packageMap);
+    updateForeignKeys("quote_project_groups", "package_id", packageMap);
     const packageSectionMap = migrateTextPrimaryKey("package_sections", "package-section");
     updateForeignKeys("package_section_items", "section_id", packageSectionMap);
     migrateTextPrimaryKey("package_section_items", "package-section-item");
@@ -1563,13 +1568,14 @@ async function handlePatchTemplateItem(req, res, id) {
   const sourceType = item.sourceType === "material" ? "material" : "labor";
   db.prepare(`
     INSERT INTO project_group_template_items (
-      id, template_id, sort_order, item_type, item_name, material_kind_id, material_id, material_category, area, quantity
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, template_id, sort_order, item_type, item_name, display_name, material_kind_id, material_id, material_category, area, quantity
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       template_id = excluded.template_id,
       sort_order = excluded.sort_order,
       item_type = excluded.item_type,
       item_name = excluded.item_name,
+      display_name = excluded.display_name,
       material_kind_id = excluded.material_kind_id,
       material_id = excluded.material_id,
       material_category = excluded.material_category,
@@ -1581,6 +1587,7 @@ async function handlePatchTemplateItem(req, res, id) {
     normalizedSortOrder(item, 0),
     sourceType,
     normalizedText(item.itemName),
+    normalizedText(item.displayName),
     normalizedText(item.materialKindId),
     normalizedText(item.materialId),
     normalizedText(item.materialCategory),
@@ -1668,8 +1675,8 @@ async function handlePatchProjectGroup(req, res, id) {
   }
   db.prepare(`
     INSERT INTO quote_project_groups (
-      id, quote_id, sort_order, name, type, work_type, icon_key, template_id, area, perimeter, height, building_area, collapsed
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, quote_id, sort_order, name, type, work_type, icon_key, template_id, package_id, area, perimeter, height, building_area, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       quote_id = excluded.quote_id,
       sort_order = excluded.sort_order,
@@ -1678,6 +1685,7 @@ async function handlePatchProjectGroup(req, res, id) {
       work_type = excluded.work_type,
       icon_key = excluded.icon_key,
       template_id = excluded.template_id,
+      package_id = excluded.package_id,
       area = excluded.area,
       perimeter = excluded.perimeter,
       height = excluded.height,
@@ -1688,10 +1696,11 @@ async function handlePatchProjectGroup(req, res, id) {
     quoteId,
     normalizedSortOrder(group, 0),
     name,
-    group.type === "overall" ? "overall" : "space",
+    group.type === "package" ? "package" : (group.type === "overall" ? "overall" : "space"),
     group.workType === "material" ? "material" : "labor",
     normalizedText(group.iconKey),
     normalizedText(group.templateId),
+    normalizedText(group.packageId),
     toNumber(group.area),
     toNumber(group.perimeter),
     toNumber(group.height),
@@ -2111,7 +2120,7 @@ function loadTemplates() {
   const items = db.prepare(`
     SELECT
       id, sort_order AS sortOrder, item_type AS sourceType,
-      item_name AS itemName, material_kind_id AS materialKindId, material_id AS materialId, material_category AS materialCategory,
+      item_name AS itemName, display_name AS displayName, material_kind_id AS materialKindId, material_id AS materialId, material_category AS materialCategory,
       area, quantity
     FROM project_group_template_items
     WHERE template_id = ?
@@ -2219,7 +2228,7 @@ function loadQuotes() {
     ORDER BY rowid
   `).all();
   const spaces = db.prepare(`
-    SELECT id, name, type, work_type AS workType, icon_key AS iconKey, template_id AS templateId, area, perimeter, height, building_area AS buildingArea, collapsed, sort_order AS sortOrder
+    SELECT id, name, type, work_type AS workType, icon_key AS iconKey, template_id AS templateId, package_id AS packageId, area, perimeter, height, building_area AS buildingArea, collapsed, sort_order AS sortOrder
     FROM quote_project_groups
     WHERE quote_id = ?
     ORDER BY sort_order
@@ -2439,8 +2448,8 @@ function insertTemplates(templates) {
   `);
   const insertItem = db.prepare(`
     INSERT INTO project_group_template_items (
-      id, template_id, sort_order, item_type, item_name, material_kind_id, material_id, material_category, area, quantity
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, template_id, sort_order, item_type, item_name, display_name, material_kind_id, material_id, material_category, area, quantity
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   (templates || []).forEach((template, index) => {
     const name = normalizedText(template?.name);
@@ -2462,6 +2471,7 @@ function insertTemplates(templates) {
         normalizedSortOrder(item, itemIndex),
         sourceType,
         normalizedText(item?.itemName),
+        normalizedText(item?.displayName),
         normalizedText(item?.materialKindId),
         normalizedText(item?.materialId),
         normalizedText(item?.materialCategory),
@@ -2640,8 +2650,8 @@ function insertQuotes(quotes) {
   `);
   const insertSpace = db.prepare(`
     INSERT INTO quote_project_groups (
-      id, quote_id, sort_order, name, type, work_type, icon_key, template_id, area, perimeter, height, building_area, collapsed
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, quote_id, sort_order, name, type, work_type, icon_key, template_id, package_id, area, perimeter, height, building_area, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   quotes.forEach((quote) => {
     insertQuote.run(
@@ -2665,10 +2675,11 @@ function insertQuotes(quotes) {
         quote.id,
         normalizedSortOrder(space, index),
         space.name || "全屋",
-        space.type === "overall" ? "overall" : "space",
+        space.type === "package" ? "package" : (space.type === "overall" ? "overall" : "space"),
         space.workType === "material" ? "material" : "labor",
         normalizedText(space.iconKey),
         normalizedText(space.templateId),
+        normalizedText(space.packageId),
         toNumber(space.area),
         toNumber(space.perimeter),
         toNumber(space.height),

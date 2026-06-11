@@ -10,7 +10,7 @@
 
 const STORAGE_KEY = "quote-tool-state-v2";
 const OLD_STORAGE_KEY = "quote-tool-state-v1";
-const APP_BUILD = "20260610-2359";
+const APP_BUILD = "20260611-0022";
 const DEFAULT_MANAGEMENT_RATE = 8;
 const DEFAULT_DESIGN_RATE = 6;
 const DEFAULT_TAX_RATE = 9;
@@ -97,7 +97,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function bindElements() {
   [
-    "saveStatus", "printBtn", "resetBtn", "addQuoteBtn",
+    "saveStatus", "printBtn", "resetBtn", "addQuoteBtn", "addQuotePackageBtn",
     "customerName", "customerContact", "customerPhone", "customerAddress", "customerList", "quoteList",
     "projectName", "editorProjectNameTitle", "showAmountColumns", "clientName", "clientPhone", "clientAddress", "quoteDate", "priceVersion", "libraryPriceVersion",
     "cloneVersionBtn", "renameVersionBtn", "deleteVersionBtn", "managementRate", "designRate", "taxRate",
@@ -275,6 +275,7 @@ function normalizeTemplateItem(item, index = 0) {
     id: item?.id || makeId("template-item"),
     sourceType,
     itemName: String(item?.itemName || "").trim(),
+    displayName: String(item?.displayName || "").trim(),
     materialKindId: String(item?.materialKindId || material?.materialKindId || "").trim(),
     materialId: String(item?.materialId || "").trim(),
     materialCategory: String(item?.materialCategory || "").trim(),
@@ -809,13 +810,15 @@ function normalizeProjectGroups(spaces, lines = []) {
 function normalizeProjectGroup(space, index = 0) {
   const wasOverall = space.type === "overall" || String(space.name || "").trim() === "整体";
   const area = toNumber(space.area) || (wasOverall ? toNumber(space.buildingArea) : 0);
+  const type = space.type === "package" ? "package" : "space";
   return {
     id: space.id || makeId("group"),
     name: String(space.name || "项目组合").trim() || "项目组合",
-    type: "space",
+    type,
     workType: space.workType === "material" ? "material" : "labor",
     iconKey: validProjectGroupIconKey(space.iconKey) || defaultProjectGroupIconKey(space),
     templateId: String(space.templateId || "").trim(),
+    packageId: String(space.packageId || "").trim(),
     area,
     perimeter: toNumber(space.perimeter),
     height: toNumber(space.height),
@@ -835,6 +838,7 @@ function validProjectGroupIconKey(iconKey) {
 
 function defaultProjectGroupIconKey(space = {}) {
   const name = String(space.name || "").trim();
+  if (space.type === "package") return "box";
   if (space.type === "overall" || name === "整体") return "home";
   if (/卧室|儿童|主卧|次卧/.test(name)) return "bed";
   if (/客厅|餐厅/.test(name)) return "sofa";
@@ -921,11 +925,12 @@ function bindEvents() {
   });
   els.resetBtn.addEventListener("click", backupDatabase);
   els.addQuoteBtn.addEventListener("click", addQuote);
+  if (els.addQuotePackageBtn) els.addQuotePackageBtn.addEventListener("click", openAddQuotePackageDialog);
   els.cloneVersionBtn.addEventListener("click", cloneVersion);
   els.renameVersionBtn.addEventListener("click", renameVersion);
   if (els.deleteVersionBtn) els.deleteVersionBtn.addEventListener("click", deleteVersion);
   if (els.addPriceItemBtn) els.addPriceItemBtn.addEventListener("click", addLaborItem);
-  if (els.addMaterialBtn) els.addMaterialBtn.addEventListener("click", addMaterial);
+  if (els.addMaterialBtn) els.addMaterialBtn.addEventListener("click", () => addMaterial());
   if (els.addTemplateBtn) els.addTemplateBtn.addEventListener("click", addTemplate);
   if (els.addPackageBtn) els.addPackageBtn.addEventListener("click", addPackage);
   if (els.addCategoryBtn) els.addCategoryBtn.addEventListener("click", addCategory);
@@ -984,6 +989,10 @@ function currentQuote() {
 
 function currentPackage() {
   return state.packages.find((entry) => entry.id === state.activePackageId) || state.packages[0];
+}
+
+function findPackage(packageId) {
+  return state.packages.find((entry) => entry.id === packageId);
 }
 
 function currentPackageEstimate(packageEntry = currentPackage()) {
@@ -1106,9 +1115,50 @@ function genericMaterialsForManagement() {
     .map((entry) => entry.kind);
 }
 
+function supplierMaterialsForDisplay(materials = state.materials) {
+  const genericOrder = new Map(genericMaterialsForManagement().map((kind, index) => [kind.id, index]));
+  return (materials || [])
+    .slice()
+    .sort((a, b) => {
+      const aKindOrder = genericOrder.get(a.materialKindId) ?? Number.MAX_SAFE_INTEGER;
+      const bKindOrder = genericOrder.get(b.materialKindId) ?? Number.MAX_SAFE_INTEGER;
+      return aKindOrder - bKindOrder
+        || String(a.brand || "").localeCompare(String(b.brand || ""), "zh-CN")
+        || a.sortOrder - b.sortOrder
+        || String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+    });
+}
+
 function findLaborItem(name, versionId = currentVersion()?.id) {
   const version = state.versions.find((item) => item.id === versionId) || currentVersion();
   return version?.items.find((item) => item.name === name);
+}
+
+function findLaborAliasMatch(name) {
+  const cleaned = normalizeName(name).toLowerCase();
+  if (!cleaned) return null;
+  for (const item of currentLaborItems()) {
+    const alias = (item.aliases || []).find((entry) => normalizeName(entry).toLowerCase() === cleaned);
+    if (alias) return { item, alias };
+  }
+  return null;
+}
+
+function hasLaborPrefixMatch(name) {
+  const cleaned = normalizeName(name).toLowerCase();
+  if (!cleaned) return false;
+  return currentLaborItems().some((item) => [item.name, ...(item.aliases || [])].some((entry) => {
+    const itemName = normalizeName(entry).toLowerCase();
+    return itemName !== cleaned && itemName.startsWith(cleaned);
+  }));
+}
+
+function prioritizeExactLaborAlias(matches, exactAliasMatch) {
+  if (!exactAliasMatch) return matches;
+  const remaining = matches.filter((match) => (
+    match.item.name !== exactAliasMatch.item.name || match.alias !== exactAliasMatch.alias
+  ));
+  return [exactAliasMatch, ...remaining];
 }
 
 function findMaterial(id) {
@@ -1131,11 +1181,37 @@ function materialPrimaryCategoryOptions(value = "") {
   )).join("");
 }
 
+function categoryToneClass(categoryName = "") {
+  const name = normalizeName(categoryName);
+  if (!name) return "category-tone-empty";
+  const laborIndex = currentCategories().findIndex((category) => category.name === name);
+  if (laborIndex >= 0) return `category-tone-${laborIndex % 4}`;
+  const materialIndex = MATERIAL_PRIMARY_CATEGORIES.findIndex((category) => category === name);
+  if (materialIndex >= 0) return `category-tone-${materialIndex % 4}`;
+  let hash = 0;
+  for (const char of name) hash += char.charCodeAt(0);
+  return `category-tone-${hash % 4}`;
+}
+
 function genericMaterialOptions(value = "", includeEmpty = true) {
   const options = includeEmpty ? [`<option value="">未关联</option>`] : [];
   return options.concat(currentGenericMaterials().map((kind) => (
     `<option value="${escapeHtml(kind.id)}" ${kind.id === value ? "selected" : ""}>${escapeHtml(kind.name)}</option>`
   ))).join("");
+}
+
+function genericMaterialInputValue(value = "") {
+  return findGenericMaterial(value)?.name || "";
+}
+
+function renderGenericMaterialDatalist() {
+  return `
+    <datalist id="genericMaterialChoices">
+      ${currentGenericMaterials().map((kind) => (
+        `<option value="${escapeHtml(kind.name)}">${escapeHtml(kind.libraryCategory || kind.primaryCategory || "")}</option>`
+      )).join("")}
+    </datalist>
+  `;
 }
 
 function materialsForItem(item) {
@@ -1328,13 +1404,23 @@ function renderSettings() {
   els.managementRate.value = quote.managementRate;
   els.designRate.value = quote.designRate;
   els.taxRate.value = quote.taxRate;
-  const versionOptions = state.versions.map((version) => (
+  const versionOptions = versionsNewestFirst().map((version) => (
     `<option value="${escapeHtml(version.id)}">${escapeHtml(version.name)}</option>`
   )).join("");
   els.priceVersion.innerHTML = versionOptions;
   els.libraryPriceVersion.innerHTML = versionOptions;
   els.priceVersion.value = quote.priceVersionId;
   els.libraryPriceVersion.value = state.activeVersionId;
+}
+
+function versionsNewestFirst() {
+  return state.versions
+    .map((version, index) => ({ version, index }))
+    .sort((a, b) => {
+      const createdCompare = String(b.version.createdAt || "").localeCompare(String(a.version.createdAt || ""));
+      return createdCompare || b.index - a.index;
+    })
+    .map((entry) => entry.version);
 }
 
 function renderLines() {
@@ -1344,6 +1430,9 @@ function renderLines() {
   els.quoteLines.innerHTML = `
     ${renderProjectGroupInsertSlot(0)}
     ${spaces.map((space, spaceIndex) => {
+    if (space.type === "package") {
+      return `${renderQuotePackageGroup(space)}${renderProjectGroupInsertSlot(spaceIndex + 1)}`;
+    }
     const spaceLines = quoteItemsForProjectGroup(quote, space.id);
     return `
       <section class="space-card ${space.collapsed ? "collapsed" : ""}" data-space-id="${escapeHtml(space.id)}" draggable="true">
@@ -1465,10 +1554,17 @@ function renderLines() {
         renderTotalsAndPreview();
       });
     }
-    spaceNode.querySelector(".add-space-labor-line").addEventListener("click", () => addQuoteItem(space.id, "labor"));
-    spaceNode.querySelector(".add-space-material-line").addEventListener("click", () => addQuoteItem(space.id, "material"));
-    spaceNode.querySelector(".sync-space-template").addEventListener("click", () => openSyncProjectGroupTemplateDialog(space.id));
-    spaceNode.querySelector(".delete-space").addEventListener("click", () => deleteProjectGroup(space.id));
+    spaceNode.querySelector(".quote-package-select")?.addEventListener("change", (event) => {
+      const packageEntry = findPackage(event.target.value);
+      space.packageId = packageEntry?.id || "";
+      if (packageEntry) space.name = packageEntry.name;
+      saveProjectGroupToServer(space, quote, "已更新报价套餐");
+      renderAll();
+    });
+    spaceNode.querySelector(".add-space-labor-line")?.addEventListener("click", () => addQuoteItem(space.id, "labor"));
+    spaceNode.querySelector(".add-space-material-line")?.addEventListener("click", () => addQuoteItem(space.id, "material"));
+    spaceNode.querySelector(".sync-space-template")?.addEventListener("click", () => openSyncProjectGroupTemplateDialog(space.id));
+    spaceNode.querySelector(".delete-space")?.addEventListener("click", () => deleteProjectGroup(space.id));
   });
 
   bindProjectGroupDragAndDrop();
@@ -1496,6 +1592,106 @@ function renderLines() {
     }
     state.pendingLineId = "";
   }
+}
+
+function renderQuotePackageGroup(space) {
+  const packageEntry = findPackage(space.packageId);
+  const packageOptions = sortedPackages().map((entry) => (
+    `<option value="${escapeHtml(entry.id)}" ${entry.id === space.packageId ? "selected" : ""}>${escapeHtml(entry.name)}</option>`
+  )).join("");
+  return `
+    <section class="space-card quote-package-card ${space.collapsed ? "collapsed" : ""}" data-space-id="${escapeHtml(space.id)}" draggable="true">
+      <div class="space-head quote-package-head">
+        <div class="space-title">
+          <button class="space-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动套餐排序" aria-label="点击展开或收缩，拖动套餐排序" aria-expanded="${String(!space.collapsed)}">⋮⋮</button>
+          <div class="space-icon-wrap">
+            <button class="space-icon-btn" type="button" aria-label="选择套餐图标" title="选择图标">${renderProjectGroupIcon(space.iconKey)}</button>
+            <div class="space-icon-picker" hidden>
+              ${renderProjectGroupIconChoices(space.iconKey)}
+            </div>
+          </div>
+          <input class="space-name" type="text" aria-label="套餐名称" value="${escapeHtml(space.name)}">
+          <span class="space-count">${escapeHtml(packageEntry ? "套餐" : "未选择")}</span>
+        </div>
+        <select class="quote-package-select" aria-label="选择套餐">
+          ${packageOptions}
+        </select>
+        <div class="space-actions">
+          <button class="delete-space danger small" type="button">删除套餐</button>
+        </div>
+      </div>
+      ${space.collapsed ? "" : `
+        <div class="quote-package-note">
+          ${packageEntry ? renderPackageQuoteSummary(packageEntry) : "<p class=\"muted\">这个报价套餐没有关联到套餐库。</p>"}
+        </div>
+      `}
+    </section>
+  `;
+}
+
+function packageQuoteSummary(packageEntry) {
+  const sections = (packageEntry?.sections || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  const sectionEntries = sections.map((section) => ({
+    section,
+    items: (section.items || []).slice().sort((a, b) => a.sortOrder - b.sortOrder)
+  }));
+  const commonKeys = commonPackageItemKeys(sectionEntries);
+  const commonItems = sectionEntries[0]?.items.filter((item) => commonKeys.has(packageSectionItemKey(item))) || [];
+  const specialSections = sectionEntries.map(({ section, items }) => ({
+    section,
+    items: items.filter((item) => !commonKeys.has(packageSectionItemKey(item)))
+  })).filter((entry) => entry.items.length);
+  return { packageEntry, sections, commonItems, specialSections };
+}
+
+function commonPackageItemKeys(sectionEntries) {
+  if (!sectionEntries.length) return new Set();
+  const counts = new Map();
+  sectionEntries.forEach(({ items }) => {
+    const keys = new Set(items.map((item) => packageSectionItemKey(item)).filter(Boolean));
+    keys.forEach((key) => counts.set(key, (counts.get(key) || 0) + 1));
+  });
+  return new Set([...counts.entries()]
+    .filter(([, count]) => count === sectionEntries.length)
+    .map(([key]) => key));
+}
+
+function packageSectionItemKey(item) {
+  if (!item) return "";
+  if (item.sourceType === "material") {
+    return `material:${item.materialKindId || item.materialId || normalizeName(item.itemName || item.name)}`;
+  }
+  return `labor:${normalizeName(item.itemName || item.name)}`;
+}
+
+function packageSectionItemQuoteLabel(item) {
+  const name = packageSectionItemDisplayName(item) || item.itemName || item.name || "";
+  const part = normalizeName(item.area || item.provider);
+  return part ? `${name}（${part}）` : name;
+}
+
+function renderPackageQuoteSummary(packageEntry) {
+  const summary = packageQuoteSummary(packageEntry);
+  if (!summary.sections.length) return `<p class="muted">这个套餐还没有项目组合。</p>`;
+  return `
+    <div class="package-quote-summary">
+      <div>
+        <strong>共有项目</strong>
+        ${renderPackageQuoteItemList(summary.commonItems, "无共有项目")}
+      </div>
+      ${summary.specialSections.map(({ section, items }) => `
+        <div>
+          <strong>${escapeHtml(section.name)}</strong>
+          ${renderPackageQuoteItemList(items, "无特殊项目")}
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderPackageQuoteItemList(items, emptyText = "无项目") {
+  if (!items.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  return `<p>${items.map((item) => escapeHtml(packageSectionItemQuoteLabel(item))).join("、")}</p>`;
 }
 
 function renderProjectGroupInsertSlot(position) {
@@ -1646,7 +1842,7 @@ function renderMaterialQuoteItem(line, quote) {
       <div class="line-field recommended-field">
         <label>主材类目</label>
         <div class="material-product-picker">
-          <button class="line-material-category readonly-price" type="button" disabled>${escapeHtml(selectedCategory || "自动")}</button>
+          <button class="line-material-category readonly-price ${categoryToneClass(selectedCategory)}" type="button" disabled>${escapeHtml(selectedCategory || "自动")}</button>
           <select class="line-material-product" aria-label="具体产品">${materialProductOptionsForLine(line)}</select>
         </div>
       </div>
@@ -1888,20 +2084,19 @@ function quoteItemsForProjectGroup(quote, spaceId) {
 function renderSuggestions(container, line, query) {
   const cleaned = normalizeName(query);
   const exactItem = cleaned ? findLaborItem(cleaned) : null;
+  const exactAliasMatch = cleaned ? findLaborAliasMatch(cleaned) : null;
   const matches = findSimilarItems(cleaned).slice(0, 5);
   const comparableItems = cleaned ? findComparableItems(cleaned, 5) : [];
-  const hasPrefixMatch = cleaned ? currentLaborItems().some((item) => {
-    const itemName = normalizeName(item.name).toLowerCase();
-    return itemName !== cleaned.toLowerCase() && itemName.startsWith(cleaned.toLowerCase());
-  }) : false;
-  const canCreate = Boolean(cleaned) && !exactItem && !hasPrefixMatch;
+  const hasExactMatch = Boolean(exactItem || exactAliasMatch);
+  const hasPrefixMatch = hasLaborPrefixMatch(cleaned);
+  const canCreate = Boolean(cleaned) && !hasExactMatch && !hasPrefixMatch;
 
   if (!cleaned) {
     closeSuggestionList(container);
     return;
   }
 
-  const visibleItems = matches.length ? matches : comparableItems;
+  const visibleItems = prioritizeExactLaborAlias(matches.length ? matches : comparableItems, exactAliasMatch);
   if (!visibleItems.length && !canCreate) {
     closeSuggestionList(container);
     return;
@@ -1909,7 +2104,9 @@ function renderSuggestions(container, line, query) {
 
   const hint = exactItem
     ? `已找到匹配项：${exactItem.name}`
-    : matches.length
+    : exactAliasMatch
+      ? `已找到别名：${exactAliasMatch.alias}，实际：${exactAliasMatch.item.name}`
+      : matches.length
       ? "找到相似项，先选已有条目，避免重复。"
       : "没有找到完全匹配项，下面先看相似条目，再决定是否新增。";
 
@@ -2519,18 +2716,26 @@ function renderLaborLibrary() {
     `<option value="">未分类</option>`,
     ...currentCategories().map((category) => `<option value="${escapeHtml(category.id)}">${escapeHtml(category.name)}</option>`)
   ].join("");
+  let categoryToneIndex = -1;
+  let previousCategoryKey = null;
   const rows = [
     renderLaborInsertRow(0, items[0]?.categoryId || "")
   ].concat(items.flatMap((item, index) => {
     const unitPrice = calculateLaborItemUnitPrice(item);
     const costUnitPrice = calculateLaborItemCostUnitPrice(item);
     const isExpanded = state.expandedLaborItemName === item.name;
-    const aliasRows = renderLaborAliasRows(item, unitPrice, costUnitPrice);
+    const categoryKey = item.categoryId || "";
+    if (categoryKey !== previousCategoryKey) {
+      categoryToneIndex += 1;
+      previousCategoryKey = categoryKey;
+    }
+    const categoryToneClass = categoryToneIndex % 2 === 0 ? "price-category-tone-a" : "price-category-tone-b";
+    const aliasRows = renderLaborAliasRows(item, unitPrice, costUnitPrice, categoryToneClass);
     return [`
       <tr class="price-row ${state.pendingLaborItemName === item.name ? "selected" : ""}" data-item-name="${escapeHtml(item.name)}" data-category-id="${escapeHtml(item.categoryId || "")}" draggable="true">
         <td class="price-drag-cell"><button class="price-drag" type="button" title="拖动排序" aria-label="拖动排序">⋮⋮</button></td>
         <td><input class="price-name-input" type="text" aria-label="工费条目名称" value="${escapeHtml(item.name)}"></td>
-        <td>
+        <td class="price-category-cell ${categoryToneClass}">
           <select class="price-category-select" aria-label="分类">
             ${categoryOptions}
           </select>
@@ -2694,18 +2899,23 @@ function renderLaborInsertRow(position, categoryId = "") {
   `;
 }
 
-function renderLaborAliasRows(item, unitPrice = calculateLaborItemUnitPrice(item), costUnitPrice = calculateLaborItemCostUnitPrice(item)) {
-  return (item.aliases || []).map((alias, index) => {
+function renderLaborAliasRows(item, unitPrice = calculateLaborItemUnitPrice(item), costUnitPrice = calculateLaborItemCostUnitPrice(item), categoryToneClass = "") {
+  const aliases = item.aliases || [];
+  return aliases.map((alias, index) => {
     const aliasUnit = parsePriceNameUnit(alias)?.unit || item.unit || parsePriceNameUnit(item.name)?.unit || "";
     return `
       <tr class="price-alias-row" data-parent-item-name="${escapeHtml(item.name)}" data-alias-index="${index}">
         <td class="price-alias-tree" aria-label="别名"></td>
         <td class="price-alias-name-cell"><input class="price-alias-name-input" type="text" aria-label="工费别名" value="${escapeHtml(alias)}"></td>
-        <td><span class="price-alias-badge">别名</span></td>
+        <td class="price-category-cell ${categoryToneClass}"><span class="price-alias-badge">别名</span></td>
         <td><span class="readonly-cell price-alias-readonly">${escapeHtml(aliasUnit)}</span></td>
         <td><span class="readonly-cell price-alias-readonly strong-cell">${formatMoney(unitPrice)}</span></td>
         <td><span class="readonly-cell price-alias-readonly strong-cell">${formatMoney(costUnitPrice)}</span></td>
-        <td></td>
+        <td class="price-alias-actions">
+          <button class="price-alias-move-up ghost small" type="button" title="上移别名" aria-label="上移别名" ${index === 0 ? "disabled" : ""}>上</button>
+          <button class="price-alias-move-down ghost small" type="button" title="下移别名" aria-label="下移别名" ${index === aliases.length - 1 ? "disabled" : ""}>下</button>
+          <button class="price-alias-delete danger small" type="button" aria-label="删除别名">删除</button>
+        </td>
       </tr>
     `;
   }).join("");
@@ -2714,7 +2924,14 @@ function renderLaborAliasRows(item, unitPrice = calculateLaborItemUnitPrice(item
 function addLaborAlias(item) {
   const base = parsePriceNameUnit(item.name)?.baseName || item.name || "新别名";
   const unit = item.unit || parsePriceNameUnit(item.name)?.unit || "项";
-  item.aliases = normalizeLaborAliases([...(item.aliases || []), `别名${base}/${unit}`]);
+  const existingAliases = item.aliases || [];
+  let nextAlias = `别名${base}/${unit}`;
+  let index = 2;
+  while (normalizeLaborAliases([...existingAliases, nextAlias]).length <= existingAliases.length) {
+    nextAlias = `别名${index}${base}/${unit}`;
+    index += 1;
+  }
+  item.aliases = normalizeLaborAliases([...existingAliases, nextAlias]);
   saveLaborItemToServer(item, currentVersion()?.id, "已新增工费别名");
   renderLaborLibrary();
   requestAnimationFrame(() => {
@@ -2743,22 +2960,52 @@ function bindLaborAliasRow(node, item) {
     if (!normalized.includes(normalizeName(event.target.value))) renderLaborLibrary();
     else flashQuoteItemSaved(node);
   });
+
+  node.querySelector(".price-alias-delete")?.addEventListener("click", () => {
+    item.aliases = (item.aliases || []).filter((_, aliasIndex) => aliasIndex !== index);
+    saveLaborItemToServer(item, currentVersion()?.id, "已删除工费别名");
+    renderLaborLibrary();
+  });
+
+  node.querySelector(".price-alias-move-up")?.addEventListener("click", () => {
+    moveLaborAlias(item, index, index - 1);
+  });
+
+  node.querySelector(".price-alias-move-down")?.addEventListener("click", () => {
+    moveLaborAlias(item, index, index + 1);
+  });
 }
 
-function addMaterial() {
+function moveLaborAlias(item, fromIndex, toIndex) {
+  const aliases = item.aliases || [];
+  if (fromIndex < 0 || toIndex < 0 || fromIndex >= aliases.length || toIndex >= aliases.length) return;
+  const reordered = [...aliases];
+  const [alias] = reordered.splice(fromIndex, 1);
+  reordered.splice(toIndex, 0, alias);
+  item.aliases = reordered;
+  saveLaborItemToServer(item, currentVersion()?.id, "已调整工费别名顺序");
+  renderLaborLibrary();
+}
+
+function addMaterial(position = 0, visibleMaterials = null) {
   const name = uniqueMaterialName("新主材");
-  const material = normalizeMaterial({ name, primaryCategory: "砖", unit: "块", sortOrder: -1 }, -1);
-  state.materials.unshift(material);
-  state.materials.forEach((material, index) => {
-    material.sortOrder = index;
-  });
+  const currentItems = visibleMaterials || supplierMaterialsForDisplay(state.materials);
+  const insertPosition = normalizeInsertPosition(position, currentItems.length);
+  const template = currentItems[Math.max(0, insertPosition - 1)] || currentItems[insertPosition];
+  const material = normalizeMaterial({
+    name,
+    brand: template?.brand || "",
+    materialKindId: template?.materialKindId || "",
+    primaryCategory: template?.primaryCategory || "砖",
+    category: template?.category || template?.primaryCategory || "砖",
+    unit: template?.unit || "块",
+    sortOrder: insertPosition
+  }, insertPosition);
+  state.materials = insertItemAndRenumberSortOrder(currentItems, material, insertPosition)
+    .concat(state.materials.filter((item) => !currentItems.some((visible) => visible.id === item.id)));
   state.materials.forEach((item) => saveMaterialToServer(item, "已新增主材"));
+  state.pendingMaterialId = material.id;
   renderMaterials();
-  const firstName = els.materialList?.querySelector(".material-name-input");
-  if (firstName) {
-    firstName.focus();
-    firstName.select();
-  }
 }
 
 function uniqueMaterialName(baseName) {
@@ -2772,9 +3019,7 @@ function uniqueMaterialName(baseName) {
 function renderMaterials() {
   if (!els.materialList) return;
   const keyword = (els.materialSearch?.value || "").trim().toLowerCase();
-  const materials = state.materials
-    .slice()
-    .sort((a, b) => a.sortOrder - b.sortOrder)
+  const materials = supplierMaterialsForDisplay(state.materials)
     .filter((material) => {
       const haystack = [
         material.name,
@@ -2793,16 +3038,18 @@ function renderMaterials() {
     });
 
   if (els.materialCount) els.materialCount.textContent = `${materials.length} 条主材`;
-  const rows = materials.map((material) => `
+  const rows = [
+    renderSupplierMaterialInsertRow(0)
+  ].concat(materials.flatMap((material, index) => [`
     <tr class="material-row ${state.pendingMaterialId === material.id ? "selected" : ""}" data-material-id="${escapeHtml(material.id)}" draggable="true">
       <td class="price-drag-cell"><button class="material-drag price-drag" type="button" title="拖动排序" aria-label="拖动排序">⋮⋮</button></td>
+      <td><input class="material-brand-input" type="text" aria-label="品牌" value="${escapeHtml(material.brand)}"></td>
       <td><input class="material-name-input" type="text" aria-label="主材名称" value="${escapeHtml(material.name)}"></td>
-      <td><select class="generic-material-input" aria-label="抽象主材">${genericMaterialOptions(material.materialKindId)}</select></td>
+      <td><input class="generic-material-input" type="text" list="genericMaterialChoices" aria-label="抽象主材" placeholder="输入抽象主材" value="${escapeHtml(genericMaterialInputValue(material.materialKindId))}"></td>
       <td><input class="material-spec-input" type="text" aria-label="规格型号" value="${escapeHtml(material.spec)}"></td>
       <td><input class="material-unit-input" type="text" aria-label="单位" value="${escapeHtml(material.unit)}"></td>
-      <td><input class="material-cost-input" type="number" min="0" step="0.01" aria-label="成本单价" value="${material.costUnitPrice}"></td>
       <td><input class="material-price-input" type="number" min="0" step="0.01" aria-label="单价" value="${material.quoteUnitPrice}"></td>
-      <td><input class="material-brand-input" type="text" aria-label="品牌" value="${escapeHtml(material.brand)}"></td>
+      <td><input class="material-cost-input" type="number" min="0" step="0.01" aria-label="成本单价" value="${material.costUnitPrice}"></td>
       <td><input class="material-formula-input" type="text" aria-label="公式预留" placeholder="后续公式" value="${escapeHtml(material.pricingFormula)}"></td>
       <td><input class="material-note-input" type="text" aria-label="备注" value="${escapeHtml(material.note)}"></td>
       <td><button class="material-calculator-toggle small ghost" type="button">换算</button></td>
@@ -2814,7 +3061,7 @@ function renderMaterials() {
         ${renderMaterialCalculator(material)}
       </td>
     </tr>
-  `).join("");
+  `, renderSupplierMaterialInsertRow(index + 1)])).join("");
 
   const returnMaterial = returnMaterialFromContext();
   const returnContext = returnMaterial ? returnContextForMaterial(returnMaterial) : null;
@@ -2830,6 +3077,7 @@ function renderMaterials() {
 
   els.materialList.innerHTML = `
     ${returnBar}
+    ${renderGenericMaterialDatalist()}
     ${renderGenericMaterialLibrary()}
     ${renderSupplierMaterialLibrary(rows)}
   `;
@@ -2862,8 +3110,15 @@ function renderMaterials() {
         }
       });
     });
-    row.querySelector(".generic-material-input").addEventListener("change", (event) => {
-      const kind = findGenericMaterial(event.target.value);
+    const genericMaterialInput = row.querySelector(".generic-material-input");
+    const updateGenericMaterialLink = () => {
+      const rawValue = normalizeName(genericMaterialInput.value);
+      const kind = findGenericMaterial(rawValue);
+      if (rawValue && !kind) {
+        genericMaterialInput.classList.add("invalid");
+        return;
+      }
+      genericMaterialInput.classList.remove("invalid");
       material.materialKindId = kind?.id || "";
       if (kind) {
         material.primaryCategory = kind.primaryCategory || material.primaryCategory;
@@ -2874,7 +3129,10 @@ function renderMaterials() {
       renderMaterials();
       renderLines();
       renderTotalsAndPreview();
-    });
+    };
+    genericMaterialInput.addEventListener("change", updateGenericMaterialLink);
+    genericMaterialInput.addEventListener("keydown", blurOnEnter);
+    genericMaterialInput.addEventListener("blur", updateGenericMaterialLink);
     row.querySelector(".material-cost-input").addEventListener("input", (event) => {
       material.costUnitPrice = toNumber(event.target.value);
       saveMaterialToServer(material, "已更新主材库");
@@ -2891,6 +3149,11 @@ function renderMaterials() {
     bindMaterialCalculator(row, material);
     row.querySelector(".material-delete").addEventListener("click", () => deleteMaterial(material));
   });
+  els.materialList.querySelectorAll(".supplier-material-insert-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      addMaterial(Number(row.dataset.position || 0), materials);
+    });
+  });
   bindMaterialDragAndDrop(materials);
   if (state.pendingMaterialId) {
     const targetRow = els.materialList.querySelector(`.material-row[data-material-id="${cssEscape(state.pendingMaterialId)}"]`);
@@ -2902,6 +3165,25 @@ function renderMaterials() {
       state.pendingMaterialId = "";
     }
   }
+}
+
+function renderSupplierMaterialInsertRow(position) {
+  return `
+    <tr class="supplier-material-insert-row" data-position="${position}" aria-label="在这里添加供货商主材">
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td><button class="supplier-material-insert-slot" type="button" tabindex="-1" aria-hidden="true"><span>+</span></button></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+  `;
 }
 
 function renderGenericMaterialLibrary() {
@@ -2923,8 +3205,8 @@ function renderGenericMaterialLibrary() {
         <td><input class="generic-material-library-category" type="text" aria-label="管理分类" value="${escapeHtml(kind.libraryCategory)}" placeholder="未分类"></td>
         <td><input class="generic-material" type="text" aria-label="抽象主材" value="${escapeHtml(kind.name)}"></td>
         <td><input class="generic-material-unit" type="text" aria-label="单位" value="${escapeHtml(kind.unit)}"></td>
-        <td><input class="generic-material-cost" type="number" min="0" step="0.01" aria-label="基准成本" value="${kind.costUnitPrice}"></td>
         <td><input class="generic-material-price" type="number" min="0" step="0.01" aria-label="基准单价" value="${kind.quoteUnitPrice}"></td>
+        <td><input class="generic-material-cost" type="number" min="0" step="0.01" aria-label="基准成本" value="${kind.costUnitPrice}"></td>
         <td><input class="generic-material-note" type="text" aria-label="备注" value="${escapeHtml(kind.note)}"></td>
         <td><button class="generic-material-calculator-toggle small ghost" type="button">换算</button></td>
         <td><button class="generic-material-delete small danger" type="button">删除</button></td>
@@ -2976,8 +3258,8 @@ function renderGenericMaterialLibrary() {
             <th>管理分类</th>
             <th>名称</th>
             <th>单位</th>
-            <th>基准成本</th>
             <th>基准单价</th>
+            <th>基准成本</th>
             <th>备注</th>
             <th>换算</th>
             <th>删除</th>
@@ -3016,13 +3298,13 @@ function renderSupplierMaterialLibrary(rows) {
         <thead>
           <tr>
             <th>排序</th>
+            <th>品牌</th>
             <th>主材名称</th>
             <th>抽象主材</th>
             <th>规格/型号</th>
             <th>单位</th>
-            <th>成本单价</th>
             <th>单价</th>
-            <th>品牌</th>
+            <th>成本单价</th>
             <th>公式</th>
             <th>备注</th>
             <th>换算</th>
@@ -3657,10 +3939,14 @@ function renderTemplates() {
           <tbody>
             ${renderTemplateInsertRow(0)}
             ${templateItemsForEditing(template).map((item, index) => {
+              const templateLaborItem = item.sourceType === "labor" ? findLaborItem(item.itemName) : null;
               const templateMaterial = item.sourceType === "material" ? findMaterial(item.materialId) : null;
               const templateGenericMaterial = item.sourceType === "material"
                 ? findGenericMaterial(item.materialKindId) || findGenericMaterial(templateMaterial?.materialKindId)
                 : null;
+              const templateCategory = item.sourceType === "material"
+                ? templateGenericMaterial?.primaryCategory || templateMaterial?.primaryCategory || item.materialCategory
+                : templateLaborItem?.category || "";
               const materialInputValue = templateMaterial?.name || templateGenericMaterial?.name || "";
               const materialLinkLabel = templateMaterial ? `已挂：${templateMaterial.name}` : "未挂具体";
               return `
@@ -3679,7 +3965,7 @@ function renderTemplates() {
                       </div>
                     ` : `
                       <div class="template-picker">
-                        <input class="template-labor-input" type="text" aria-label="工费条目" placeholder="输入工费名称，选择相似工费" value="${escapeHtml(item.itemName || "")}" autocomplete="off">
+                        <input class="template-labor-input" type="text" aria-label="工费条目" placeholder="输入工费名称，选择相似工费" value="${escapeHtml(item.displayName || item.itemName || "")}" autocomplete="off">
                         <div class="suggestions"></div>
                       </div>
                     `}
@@ -3687,10 +3973,10 @@ function renderTemplates() {
                   <td>
                     ${item.sourceType === "material" ? `
                       <div class="template-category-action">
-                        <button class="template-jump-material muted-cell" type="button" ${item.materialId ? "" : "disabled"} title="${item.materialId ? "编辑已挂接的具体主材" : "在左侧输入框搜索并选择具体主材即可挂接"}">${escapeHtml(materialLinkLabel)}</button>
+                        <button class="template-jump-material muted-cell ${categoryToneClass(templateCategory)}" type="button" ${item.materialId ? "" : "disabled"} title="${item.materialId ? "编辑已挂接的具体主材" : "在左侧输入框搜索并选择具体主材即可挂接"}">${escapeHtml(materialLinkLabel)}</button>
                       </div>
                     ` : `
-                      <button class="template-jump-labor muted-cell" type="button" ${findLaborItem(item.itemName) ? "" : "disabled"} title="编辑工费库条目">${escapeHtml(findLaborItem(item.itemName)?.category || "未匹配")}</button>
+                      <button class="template-jump-labor muted-cell ${categoryToneClass(templateCategory)}" type="button" ${templateLaborItem ? "" : "disabled"} title="编辑工费库条目">${escapeHtml(templateLaborItem?.category || "未匹配")}</button>
                     `}
                   </td>
                   <td><input class="template-area" type="text" value="${escapeHtml(item.area)}" placeholder="可空"></td>
@@ -3817,6 +4103,7 @@ function renderTemplates() {
         bindSuggestionSearchInput(laborInput, suggestions, {
           onInput: (value) => {
             item.itemName = value;
+            item.displayName = value;
             markTemplateManualOrder(template);
             saveTemplateToServer(template, "已更新模板工费项");
             saveTemplateItemToServer(item, template, "已更新模板工费项");
@@ -3890,25 +4177,27 @@ function renderTemplateLaborSuggestions(container, templateItem, query) {
   const cleaned = normalizeName(query);
   const comparableItems = cleaned ? findComparableItems(cleaned, 6) : [];
   const exactItem = currentLaborItems().find((item) => normalizeName(item.name) === cleaned);
-  const hasPrefixMatch = cleaned ? currentLaborItems().some((item) => {
-    const itemName = normalizeName(item.name).toLowerCase();
-    return itemName !== cleaned.toLowerCase() && itemName.startsWith(cleaned.toLowerCase());
-  }) : false;
-  const canCreate = Boolean(cleaned) && !exactItem && !hasPrefixMatch;
+  const exactAliasMatch = cleaned ? findLaborAliasMatch(cleaned) : null;
+  const visibleItems = prioritizeExactLaborAlias(comparableItems, exactAliasMatch);
+  const hasExactMatch = Boolean(exactItem || exactAliasMatch);
+  const hasPrefixMatch = hasLaborPrefixMatch(cleaned);
+  const canCreate = Boolean(cleaned) && !hasExactMatch && !hasPrefixMatch;
 
   if (!cleaned) {
     closeSuggestionList(container);
     return;
   }
 
-  if (!comparableItems.length && !canCreate) {
+  if (!visibleItems.length && !canCreate) {
     closeSuggestionList(container);
     return;
   }
 
   const hint = exactItem
     ? `已找到匹配项：${exactItem.name}`
-    : comparableItems.length
+    : exactAliasMatch
+      ? `已找到别名：${exactAliasMatch.alias}，实际：${exactAliasMatch.item.name}`
+      : visibleItems.length
       ? "找到相似工费项，先选已有条目，避免重复。"
       : "没有找到完全匹配项，可以新增到工费库。";
   const createButton = canCreate ? `
@@ -3924,7 +4213,7 @@ function renderTemplateLaborSuggestions(container, templateItem, query) {
   container.innerHTML = `
     <div class="suggestion-hint">${escapeHtml(hint)}</div>
     ${createButton}
-    ${comparableItems.map((item) => renderLaborSuggestionOption(item)).join("")}
+    ${visibleItems.map((item) => renderLaborSuggestionOption(item)).join("")}
   `;
   activateSuggestionList(container, (button) => activateTemplateLaborSuggestion(button, templateItem));
 }
@@ -3937,6 +4226,7 @@ function activateTemplateLaborSuggestion(button, templateItem) {
   if (!button) return;
   if (button.dataset.itemName) {
     templateItem.itemName = button.dataset.itemName;
+    templateItem.displayName = button.dataset.displayName || "";
     const template = templateForItem(templateItem);
     markTemplateManualOrder(template);
     saveTemplateToServer(template, "已选择模板工费项");
@@ -3958,6 +4248,7 @@ function createLaborItemFromTemplate(templateItem, rawName) {
   const existing = version.items.find((item) => normalizeName(item.name) === name);
   if (existing) {
     templateItem.itemName = existing.name;
+    templateItem.displayName = "";
     const template = templateForItem(templateItem);
     markTemplateManualOrder(template);
     saveTemplateToServer(template, "已选择模板工费项");
@@ -3973,6 +4264,7 @@ function createLaborItemFromTemplate(templateItem, rawName) {
   const existingWithUnit = version.items.find((item) => normalizeName(item.name) === normalizeName(itemName));
   if (existingWithUnit) {
     templateItem.itemName = existingWithUnit.name;
+    templateItem.displayName = "";
     const template = templateForItem(templateItem);
     markTemplateManualOrder(template);
     saveTemplateToServer(template, "已选择模板工费项");
@@ -3999,6 +4291,7 @@ function createLaborItemFromTemplate(templateItem, rawName) {
   }, version.items.length);
   version.items.push(newItem);
   templateItem.itemName = newItem.name;
+  templateItem.displayName = "";
   const template = templateForItem(templateItem);
   markTemplateManualOrder(template);
   saveLaborItemToServer(newItem, version.id, "已新增模板工费项");
@@ -4503,7 +4796,7 @@ function moveMaterialBefore(draggedId, targetId, visibleMaterials) {
   const hiddenMaterials = state.materials
     .filter((material) => !visibleIds.has(material.id))
     .sort((a, b) => a.sortOrder - b.sortOrder);
-  const reordered = (visibleMaterials || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  const reordered = (visibleMaterials || []).slice();
   const draggedIndex = reordered.findIndex((material) => material.id === draggedId);
   const targetIndex = reordered.findIndex((material) => material.id === targetId);
   if (draggedIndex < 0 || targetIndex < 0) return;
@@ -4682,6 +4975,12 @@ function renderTotalsAndPreview() {
   els.previewGrand.textContent = formatMoney(totals.grand);
   let rowIndex = 0;
   els.previewRows.innerHTML = sortedProjectGroups(quote).map((space) => {
+    if (space.type === "package") {
+      const packageEntry = findPackage(space.packageId);
+      if (!packageEntry) return "";
+      rowIndex += 1;
+      return renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColumns);
+    }
     const spaceLines = quoteItemsForProjectGroup(quote, space.id);
     if (!spaceLines.length) return "";
     const meta = [
@@ -4731,6 +5030,39 @@ function renderTotalsAndPreview() {
       }).join("")}
     `;
   }).join("");
+}
+
+function renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColumns) {
+  const colspan = showAmountColumns ? 6 : 3;
+  const summary = packageQuoteSummary(packageEntry);
+  return `
+    <tr class="preview-space-row preview-package-row">
+      <td>${rowIndex}</td>
+      <td colspan="${colspan}"><strong>${escapeHtml(space.name || packageEntry.name)}</strong><span>套餐说明</span></td>
+    </tr>
+    <tr class="preview-package-detail-row">
+      <td></td>
+      <td colspan="${colspan}">
+        <div class="preview-package-detail">
+          <section>
+            <strong>共有项目</strong>
+            ${renderPreviewPackageItemList(summary.commonItems, "无共有项目")}
+          </section>
+          ${summary.specialSections.map(({ section, items }) => `
+            <section>
+              <strong>${escapeHtml(section.name)}</strong>
+              ${renderPreviewPackageItemList(items, "无特殊项目")}
+            </section>
+          `).join("")}
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function renderPreviewPackageItemList(items, emptyText = "无项目") {
+  if (!items.length) return `<p>${escapeHtml(emptyText)}</p>`;
+  return `<p>${items.map((item) => escapeHtml(packageSectionItemQuoteLabel(item))).join("、")}</p>`;
 }
 
 function renderPreviewTableHead(showAmountColumns = true) {
@@ -5052,7 +5384,7 @@ function makeQuoteItemFromTemplateItem(templateItem, space, quote) {
   if (!item) return null;
   const line = makeQuoteItem(item.name, templateItem.area || "", toNumber(templateItem.quantity), space.id);
   line.sourceType = "labor";
-  line.engineeringName = item.name;
+  line.engineeringName = templateItem.displayName || item.name;
   line.priceItemName = item.name;
   line.materialId = "";
   line.materialCategory = "";
@@ -5245,6 +5577,80 @@ function openSyncProjectGroupTemplateDialog(spaceId) {
   templateSelect.focus();
 }
 
+function openAddQuotePackageDialog() {
+  const quote = currentQuote();
+  if (!quote) return;
+  const packages = sortedPackages();
+  if (!packages.length) {
+    alert("还没有套餐，请先到套餐库维护套餐。");
+    return;
+  }
+  document.querySelector(".modal-backdrop")?.remove();
+  const overlay = document.createElement("div");
+  overlay.className = "modal-backdrop";
+  overlay.innerHTML = `
+    <div class="app-modal add-space-modal" role="dialog" aria-modal="true" aria-labelledby="addQuotePackageTitle">
+      <div class="modal-head">
+        <div>
+          <h3 id="addQuotePackageTitle">添加套餐</h3>
+          <p>套餐加入报价后，只在预览里展示套餐说明，不参与单价、面积和金额计算。</p>
+        </div>
+        <button class="modal-close ghost" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body">
+        <label>选择套餐
+          <select class="quote-package-modal-select">
+            ${packages.map((entry) => `<option value="${escapeHtml(entry.id)}">${escapeHtml(entry.name)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-cancel ghost" type="button">取消</button>
+        <button class="modal-confirm" type="button">添加套餐</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector(".modal-close").addEventListener("click", close);
+  overlay.querySelector(".modal-cancel").addEventListener("click", close);
+  overlay.addEventListener("mousedown", (event) => {
+    if (event.target === overlay) close();
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") close();
+    if (event.key === "Enter" && !event.target.closest("select")) {
+      event.preventDefault();
+      overlay.querySelector(".modal-confirm").click();
+    }
+  });
+  overlay.querySelector(".modal-confirm").addEventListener("click", () => {
+    const packageEntry = packages.find((entry) => entry.id === overlay.querySelector(".quote-package-modal-select").value);
+    if (!packageEntry) return;
+    addPackageToQuote(packageEntry);
+    close();
+  });
+  overlay.querySelector(".quote-package-modal-select").focus();
+}
+
+function addPackageToQuote(packageEntry) {
+  const quote = currentQuote();
+  if (!quote || !packageEntry) return;
+  const group = normalizeProjectGroup({
+    id: makeId("group"),
+    name: uniqueProjectGroupName(packageEntry.name || "套餐"),
+    type: "package",
+    packageId: packageEntry.id,
+    iconKey: "box",
+    collapsed: false,
+    sortOrder: sortedProjectGroups(quote).length
+  });
+  quote.spaces.forEach((entry) => { entry.collapsed = true; });
+  quote.spaces = [...sortedProjectGroups(quote), group].map((entry, index) => ({ ...entry, sortOrder: index }));
+  quote.spaces.forEach((entry) => saveProjectGroupToServer(entry, quote, "已添加报价套餐"));
+  renderAll();
+}
+
 function createProjectGroupFromDialog(spaceName, templateId = "", insertPosition = null) {
   const quote = currentQuote();
   if (!quote) return;
@@ -5265,6 +5671,15 @@ function createProjectGroupFromDialog(spaceName, templateId = "", insertPosition
   quote.spaces.forEach((entry) => saveProjectGroupToServer(entry, quote, newLines.length ? `已添加项目组合并套用 ${newLines.length} 项模板` : "已添加项目组合"));
   newLines.forEach((line) => saveQuoteItemToServer(line, quote, "已添加项目组合"));
   renderAll();
+}
+
+function uniqueProjectGroupName(baseName = "项目组合") {
+  const cleanedBase = String(baseName || "项目组合").trim() || "项目组合";
+  const names = new Set((currentQuote()?.spaces || []).map((space) => normalizeName(space.name)));
+  if (!names.has(normalizeName(cleanedBase))) return cleanedBase;
+  let index = 2;
+  while (names.has(normalizeName(`${cleanedBase} ${index}`))) index += 1;
+  return `${cleanedBase} ${index}`;
 }
 
 function projectGroupNameExists(name, excludeId = "") {
@@ -5768,9 +6183,6 @@ function renderPackageEstimateSummary(packageEntry, estimate, totals) {
     <div class="package-estimate-meta">
       <label>测算名称<input class="estimate-name" type="text" value="${escapeHtml(estimate.name)}"></label>
       <label>建筑面积<input class="estimate-building-area" type="number" min="0" step="0.01" value="${estimate.buildingArea}"></label>
-      <label>面积<input class="estimate-area" type="number" min="0" step="0.01" value="${estimate.area}"></label>
-      <label>周长<input class="estimate-perimeter" type="number" min="0" step="0.01" value="${estimate.perimeter}"></label>
-      <label>高度<input class="estimate-height" type="number" min="0" step="0.01" value="${estimate.height}"></label>
       <label>测算单价<input class="estimate-price" type="number" min="0" step="0.01" value="${estimate.quoteUnitPrice || packageEntry.quoteUnitPrice}"></label>
     </div>
     <div class="package-estimate-summary">
@@ -5814,8 +6226,9 @@ function renderPackageEstimateEditor(packageEntry, estimate) {
 function renderPackageEstimateGroup(estimate, group) {
   const items = (estimate.items || []).filter((item) => item.groupId === group.id).sort((a, b) => a.sortOrder - b.sortOrder);
   return `
-    <section class="package-estimate-group ${group.collapsed ? "collapsed" : ""}" data-group-id="${escapeHtml(group.id)}">
+    <section class="package-estimate-group ${group.collapsed ? "collapsed" : ""}" data-group-id="${escapeHtml(group.id)}" draggable="true">
       <div class="package-estimate-group-head">
+        <button class="package-estimate-group-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动组合排序" aria-label="点击展开或收缩，拖动组合排序" aria-expanded="${String(!group.collapsed)}">⋮⋮</button>
         <input class="estimate-group-name" type="text" value="${escapeHtml(group.name)}">
         <label>数量<input class="estimate-group-count" type="number" min="0" step="1" value="${group.count}"></label>
         <label>面积<input class="estimate-group-area" type="number" min="0" step="0.01" value="${group.area}"></label>
@@ -5828,7 +6241,7 @@ function renderPackageEstimateGroup(estimate, group) {
       ${group.collapsed ? "" : `
       <div class="package-estimate-table">
         <div class="package-estimate-row header">
-          <span>类型</span><span>项目名称</span><span>部位</span><span>工程量</span><span>单位</span><span>报价单价</span><span>成本单价</span><span>成本金额</span><span>归类</span><span>操作</span>
+          <span>类型</span><span>项目名称</span><span>部位</span><span>推荐工程量</span><span>工程量</span><span>单位</span><span>报价单价</span><span>成本单价</span><span>成本金额</span><span>归类</span><span>操作</span>
         </div>
         ${renderPackageEstimateInsertSlot(group.id, 0)}
         ${items.map((item, index) => `
@@ -5852,6 +6265,7 @@ function renderPackageEstimateInsertSlot(groupId, position) {
 function renderPackageEstimateItem(estimate, group, item) {
   const data = packageEstimateItemPricing(item);
   const canJump = item.sourceType === "labor" && Boolean(findLaborItem(item.itemName));
+  const recommendedQuantity = packageEstimateRecommendedQuantityForItem(item, estimate, group);
   return `
     <div class="package-estimate-row" data-item-id="${escapeHtml(item.id)}">
       <select class="estimate-item-type">
@@ -5863,6 +6277,7 @@ function renderPackageEstimateItem(estimate, group, item) {
         <div class="suggestions"></div>
       </label>
       <input class="estimate-item-area" type="text" value="${escapeHtml(item.area)}" placeholder="可空">
+      <button class="recommended-qty estimate-recommended-qty" type="button" ${recommendedQuantity === null ? "disabled" : ""}>${recommendedQuantity === null ? "" : formatNumber(recommendedQuantity)}</button>
       <input class="estimate-item-quantity" type="number" min="0" step="0.01" value="${item.quantity}">
       <button class="readonly-cell estimate-jump-labor" type="button" ${canJump ? "" : "disabled"}>${escapeHtml(data.unit)}</button>
       <button class="readonly-cell estimate-jump-labor" type="button" ${canJump ? "" : "disabled"}>${formatMoney(data.quoteUnitPrice)}</button>
@@ -5990,20 +6405,19 @@ function handlePackageSectionItemSuggestionKeys(event, container, item) {
 function renderPackageSectionLaborSuggestions(container, item, query) {
   const cleaned = normalizeName(query);
   const exactItem = cleaned ? findLaborItem(cleaned) : null;
+  const exactAliasMatch = cleaned ? findLaborAliasMatch(cleaned) : null;
   const matches = findSimilarItems(cleaned).slice(0, 5);
   const comparableItems = cleaned ? findComparableItems(cleaned, 6) : [];
-  const hasPrefixMatch = cleaned ? currentLaborItems().some((laborItem) => {
-    const itemName = normalizeName(laborItem.name).toLowerCase();
-    return itemName !== cleaned.toLowerCase() && itemName.startsWith(cleaned.toLowerCase());
-  }) : false;
-  const canCreate = Boolean(cleaned) && !exactItem && !hasPrefixMatch;
+  const hasExactMatch = Boolean(exactItem || exactAliasMatch);
+  const hasPrefixMatch = hasLaborPrefixMatch(cleaned);
+  const canCreate = Boolean(cleaned) && !hasExactMatch && !hasPrefixMatch;
 
   if (!cleaned) {
     closeSuggestionList(container);
     return;
   }
 
-  const visibleItems = matches.length ? matches : comparableItems;
+  const visibleItems = prioritizeExactLaborAlias(matches.length ? matches : comparableItems, exactAliasMatch);
   if (!visibleItems.length && !canCreate) {
     closeSuggestionList(container);
     return;
@@ -6011,6 +6425,8 @@ function renderPackageSectionLaborSuggestions(container, item, query) {
 
   const hint = exactItem
     ? `已找到匹配项：${exactItem.name}`
+    : exactAliasMatch
+      ? `已找到别名：${exactAliasMatch.alias}，实际：${exactAliasMatch.item.name}`
     : visibleItems.length
       ? "找到相似工费项，先选已有条目，避免重复。"
       : "没有找到完全匹配项，可以新增到工费库。";
@@ -6250,9 +6666,6 @@ function bindPackageEstimateInputs(packageEntry, estimate) {
   bindEditableObjectFields(els.packageDetail, estimate, [
     [".estimate-name", "name"],
     [".estimate-building-area", "buildingArea", "number"],
-    [".estimate-area", "area", "number"],
-    [".estimate-perimeter", "perimeter", "number"],
-    [".estimate-height", "height", "number"],
     [".estimate-price", "quoteUnitPrice", "number"]
   ], {
     message: "已更新测算",
@@ -6272,10 +6685,6 @@ function bindPackageEstimateGroups(packageEntry, estimate) {
   els.packageDetail.querySelectorAll(".package-estimate-group").forEach((node) => {
     const group = estimate.groups.find((entry) => entry.id === node.dataset.groupId);
     if (!group) return;
-    node.querySelector(".package-estimate-group-head")?.addEventListener("click", (event) => {
-      if (event.target.closest("button, input, select, textarea")) return;
-      togglePackageEstimateGroup(estimate, group);
-    });
     [
       [".estimate-group-name", "name", "text"],
       [".estimate-group-count", "count", "number"],
@@ -6287,7 +6696,6 @@ function bindPackageEstimateGroups(packageEntry, estimate) {
       message: "已更新测算组合",
       save: (target, message) => savePackageEstimateGroupToServer(target, estimate, message),
       blurOnEnter: true,
-      onInput: () => updatePackageEstimateGroupQuantities(packageEntry, estimate, group),
       onChange: renderPackages
     }));
     node.querySelector(".add-estimate-labor")?.addEventListener("click", () => {
@@ -6306,6 +6714,7 @@ function bindPackageEstimateGroups(packageEntry, estimate) {
     });
     bindPackageEstimateItemRows(packageEntry, estimate, group, node);
   });
+  bindPackageEstimateGroupDragAndDrop(estimate);
 }
 
 function togglePackageEstimateGroup(estimate, group) {
@@ -6319,6 +6728,76 @@ function togglePackageEstimateGroup(estimate, group) {
 
 function openOnlyPackageEstimateGroup(estimate, groupId) {
   estimate.groups.forEach((entry) => { entry.collapsed = entry.id !== groupId; });
+}
+
+function bindPackageEstimateGroupDragAndDrop(estimate) {
+  let draggedGroupId = "";
+  els.packageDetail.querySelectorAll(".package-estimate-group").forEach((node) => {
+    let canDragGroup = false;
+    let didDragGroup = false;
+    const group = estimate.groups.find((entry) => entry.id === node.dataset.groupId);
+    const dragButton = node.querySelector(".package-estimate-group-drag");
+    dragButton?.addEventListener("pointerdown", () => {
+      canDragGroup = true;
+      didDragGroup = false;
+    });
+    dragButton?.addEventListener("pointerup", () => {
+      setTimeout(() => { canDragGroup = false; }, 0);
+    });
+    dragButton?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      canDragGroup = false;
+      if (didDragGroup) {
+        didDragGroup = false;
+        return;
+      }
+      if (group) togglePackageEstimateGroup(estimate, group);
+    });
+    node.addEventListener("dragstart", (event) => {
+      if (!canDragGroup && !event.target.closest(".package-estimate-group-drag")) {
+        event.preventDefault();
+        canDragGroup = false;
+        return;
+      }
+      didDragGroup = true;
+      draggedGroupId = node.dataset.groupId || "";
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", draggedGroupId);
+      node.classList.add("dragging");
+    });
+    node.addEventListener("dragend", () => {
+      canDragGroup = false;
+      draggedGroupId = "";
+      node.classList.remove("dragging");
+      els.packageDetail.querySelectorAll(".package-estimate-group").forEach((entry) => entry.classList.remove("drag-over"));
+    });
+    node.addEventListener("dragover", (event) => {
+      const targetId = node.dataset.groupId || "";
+      if (!draggedGroupId || draggedGroupId === targetId) return;
+      event.preventDefault();
+      node.classList.add("drag-over");
+    });
+    node.addEventListener("dragleave", () => node.classList.remove("drag-over"));
+    node.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const targetId = node.dataset.groupId || "";
+      node.classList.remove("drag-over");
+      reorderPackageEstimateGroup(estimate, event.dataTransfer.getData("text/plain") || draggedGroupId, targetId);
+    });
+  });
+}
+
+function reorderPackageEstimateGroup(estimate, draggedId, targetId) {
+  if (!estimate || !draggedId || !targetId || draggedId === targetId) return;
+  const groups = (estimate.groups || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
+  const draggedIndex = groups.findIndex((entry) => entry.id === draggedId);
+  const targetIndex = groups.findIndex((entry) => entry.id === targetId);
+  if (draggedIndex < 0 || targetIndex < 0) return;
+  const [dragged] = groups.splice(draggedIndex, 1);
+  groups.splice(targetIndex, 0, dragged);
+  estimate.groups = groups.map((entry, index) => ({ ...entry, sortOrder: index }));
+  estimate.groups.forEach((group) => savePackageEstimateGroupToServer(group, estimate, "已调整测算组合顺序"));
+  renderPackages();
 }
 
 function bindPackageEstimateItemRows(packageEntry, estimate, group, node) {
@@ -6354,7 +6833,11 @@ function bindPackageEstimateItemRows(packageEntry, estimate, group, node) {
       item.quantity = toNumber(event.target.value);
       savePackageEstimateItemToServer(item, estimate, "已更新测算工程量");
     });
+    quantityInput?.addEventListener("click", (event) => handlePackageEstimateQuantityTripleClick(event, row, item, estimate, group));
     quantityInput?.addEventListener("change", () => renderPackages());
+    row.querySelector(".estimate-recommended-qty")?.addEventListener("click", () => {
+      syncPackageEstimateRecommendedQuantity(row, item, estimate, group);
+    });
     row.querySelector(".estimate-item-included")?.addEventListener("change", (event) => {
       item.includedType = event.target.value;
       savePackageEstimateItemToServer(item, estimate, "已更新测算归类");
@@ -6480,6 +6963,18 @@ function packageEstimateQuantityFromSectionItem(sectionItem, estimate, group) {
   if (sectionItem.sourceType === "material") return count;
   const laborItem = findLaborItem(sectionItem.itemName || sectionItem.name);
   const quantity = evaluatePackageItemQuantity(laborItem?.quantityFormula, estimate, group, laborItem?.quantityRoundDown);
+  return roundQuantity(quantity * count);
+}
+
+function packageEstimateRecommendedQuantityForItem(item, estimate, group) {
+  if (!item || !estimate || !group) return null;
+  const count = toNumber(group.count);
+  if (!count) return 0;
+  if (item.sourceType === "material") return count;
+  const laborItem = findLaborItem(item.itemName);
+  if (!laborItem?.quantityFormula) return null;
+  const quantity = evaluatePackageItemQuantity(laborItem.quantityFormula, estimate, group, laborItem.quantityRoundDown);
+  if (quantity === null) return null;
   return roundQuantity(quantity * count);
 }
 
@@ -6667,7 +7162,7 @@ function packageSectionItemFromTemplateItem(templateItem, index = 0) {
   if (!laborItem && !templateItem.itemName) return null;
   return normalizePackageSectionItem({
     sourceType: "labor",
-    name: laborItem?.name || templateItem.itemName,
+    name: templateItem.displayName || laborItem?.name || templateItem.itemName,
     itemName: laborItem?.name || templateItem.itemName,
     unit: laborItem?.unit || parsePriceNameUnit(templateItem.itemName)?.unit || "",
     area: templateItem.area || "",
@@ -6826,7 +7321,6 @@ function packageEstimateItemPricing(item) {
 
 function calculatePackageEstimateTotals(packageEntry, estimate) {
   if (!estimate) return { quoteTotal: 0, laborCost: 0, materialCost: 0, totalCost: 0, profit: 0, profitRate: 0 };
-  refreshSyncedPackageEstimateQuantities(packageEntry, estimate);
   const quantity = toNumber(estimate.buildingArea || estimate.area);
   const quoteUnitPrice = toNumber(estimate.quoteUnitPrice || packageEntry?.quoteUnitPrice);
   const quoteTotal = quantity * quoteUnitPrice;
@@ -6848,11 +7342,6 @@ function calculatePackageEstimateTotals(packageEntry, estimate) {
     profit,
     profitRate: quoteTotal ? profit / quoteTotal : 0
   };
-}
-
-function refreshSyncedPackageEstimateQuantities(packageEntry, estimate) {
-  if (!packageEntry || !estimate) return;
-  (estimate.groups || []).forEach((group) => updatePackageEstimateGroupQuantities(packageEntry, estimate, group));
 }
 
 function renderPackageLaborSuggestions(container, item, query, estimate, group) {
@@ -6927,6 +7416,22 @@ function handlePackageSuggestionKeys(event, container, item, estimate, group) {
   });
 }
 
+function handlePackageEstimateQuantityTripleClick(event, row, item, estimate, group) {
+  if (event.detail !== 3) return;
+  event.preventDefault();
+  syncPackageEstimateRecommendedQuantity(row, item, estimate, group);
+}
+
+function syncPackageEstimateRecommendedQuantity(row, item, estimate, group) {
+  const recommendedQuantity = packageEstimateRecommendedQuantityForItem(item, estimate, group);
+  if (recommendedQuantity === null) return;
+  item.quantity = recommendedQuantity;
+  const quantityInput = row?.querySelector(".estimate-item-quantity");
+  if (quantityInput) quantityInput.value = item.quantity;
+  savePackageEstimateItemToServer(item, estimate, "已同步推荐工程量");
+  renderPackages();
+}
+
 function selectPackageLaborSuggestion(item, itemName, estimate, group) {
   const laborItem = findLaborItem(itemName);
   if (!laborItem) return;
@@ -6965,10 +7470,11 @@ function selectPackageGenericMaterialSuggestion(item, kindId) {
 }
 
 function evaluatePackageItemQuantity(formula, estimate, group, roundDown = false) {
+  const contextSource = group || estimate || {};
   return evaluateQuantityFormula(formula || DEFAULT_QUANTITY_FORMULA, {
-    s: toNumber(group?.area || estimate?.area || estimate?.buildingArea),
-    c: toNumber(group?.perimeter || estimate?.perimeter),
-    h: toNumber(group?.height || estimate?.height)
+    s: toNumber(contextSource.area),
+    c: toNumber(contextSource.perimeter),
+    h: toNumber(contextSource.height)
   }, { roundDown });
 }
 

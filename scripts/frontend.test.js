@@ -253,6 +253,24 @@ test("normalizes server materialKinds into abstract materials", () => {
   assert.equal(tile.libraryCategory, "Tile category");
 });
 
+test("renders supplier material kind as searchable input and price before cost", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.genericMaterials = [
+      normalizeGenericMaterial({ id: "kind-tile", name: "Tile", libraryCategory: "Tile category", primaryCategory: "Tile" }, 0)
+    ];
+  `);
+
+  const datalist = app.renderGenericMaterialDatalist();
+  const supplierTable = app.renderSupplierMaterialLibrary("");
+
+  assert.match(datalist, /id="genericMaterialChoices"/);
+  assert.match(datalist, /value="Tile"/);
+  assert.match(app.renderSupplierMaterialInsertRow(1), /supplier-material-insert-row/);
+  assert.match(app.renderSupplierMaterialInsertRow(1), /supplier-material-insert-slot/);
+  assert.ok(supplierTable.indexOf("<th>单价</th>") < supplierTable.indexOf("<th>成本单价</th>"));
+});
+
 test("saves abstract material conversion fields through the partial API", async () => {
   const app = loadFrontend();
   setFrontendState(app, `
@@ -353,6 +371,33 @@ test("orders and toggles abstract material management categories", () => {
   state = getFrontendState(app);
   assert.equal(state.genericMaterialCategoryState.A.collapsed, true);
   assert.equal(state.genericMaterialCategoryState.B.collapsed, true);
+});
+
+test("sorts supplier materials by abstract material order then brand", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.genericMaterials = [
+      normalizeGenericMaterial({ id: "kind-door", name: "Door", libraryCategory: "B", primaryCategory: "Door", sortOrder: 0 }, 0),
+      normalizeGenericMaterial({ id: "kind-tile", name: "Tile", libraryCategory: "A", primaryCategory: "Tile", sortOrder: 0 }, 0)
+    ];
+    state.genericMaterialCategoryState = {
+      A: { collapsed: false, sortOrder: 0 },
+      B: { collapsed: true, sortOrder: 1 }
+    };
+    state.materials = [
+      normalizeMaterial({ id: "mat-door", name: "Door material", materialKindId: "kind-door", brand: "B brand", sortOrder: 0 }, 0),
+      normalizeMaterial({ id: "mat-tile-b", name: "Tile B", materialKindId: "kind-tile", brand: "B brand", sortOrder: 1 }, 1),
+      normalizeMaterial({ id: "mat-tile-a", name: "Tile A", materialKindId: "kind-tile", brand: "A brand", sortOrder: 2 }, 2),
+      normalizeMaterial({ id: "mat-none", name: "No kind", brand: "A brand", sortOrder: 3 }, 3)
+    ];
+  `);
+
+  assert.deepEqual(plain(app.supplierMaterialsForDisplay().map((material) => material.id)), [
+    "mat-tile-a",
+    "mat-tile-b",
+    "mat-door",
+    "mat-none"
+  ]);
 });
 
 test("renders abstract material insert slots and inserts at requested category position", () => {
@@ -649,34 +694,144 @@ test("calculates package estimate totals and ignores reference items", () => {
     state.categories = [{ id: "cat-a", name: "Base", sortOrder: 0 }];
     state.versions = [{
       id: "version-a",
-      items: [{ name: "labor/m2", unit: "m2", categoryId: "cat-a", auxiliary: 6, labor: 4, costAuxiliary: 2, costLabor: 3, sortOrder: 0 }]
+      items: [{ name: "labor/m2", unit: "m2", categoryId: "cat-a", auxiliary: 6, labor: 4, costAuxiliary: 2, costLabor: 3, quantityFormula: "q=s+h", sortOrder: 0 }]
     }];
     state.activeVersionId = "version-a";
     state.materials = [{ id: "mat-a", name: "tile", primaryCategory: "砖", unit: "piece", quoteUnitPrice: 20, costUnitPrice: 12, sortOrder: 0 }];
   `);
-  const packageEntry = { quoteUnitPrice: 300 };
+  const packageEntry = { quoteUnitPrice: 300, sections: [] };
   const estimate = {
     buildingArea: 100,
     quoteUnitPrice: 350,
+    groups: [{ id: "group-a", count: 2, area: 20, perimeter: 8, height: 3 }],
     items: [
-      { sourceType: "labor", itemName: "labor/m2", quantity: 10, includedType: "included" },
-      { sourceType: "material", materialId: "mat-a", quantity: 5, includedType: "upgrade" },
+      { id: "labor-a", groupId: "group-a", sourceType: "labor", itemName: "labor/m2", quantity: 10, includedType: "included" },
+      { id: "material-a", groupId: "group-a", sourceType: "material", materialId: "mat-a", quantity: 5, includedType: "upgrade" },
       { sourceType: "material", materialId: "mat-a", quantity: 999, includedType: "reference" }
     ]
   };
 
   const pricing = app.packageEstimateItemPricing(estimate.items[0]);
   const totals = app.calculatePackageEstimateTotals(packageEntry, estimate);
+  const rowHtml = app.renderPackageEstimateItem(estimate, estimate.groups[0], estimate.items[0]);
 
   assert.equal(pricing.quoteUnitPrice, 10);
   assert.equal(pricing.costUnitPrice, 5);
   assert.equal(pricing.costAmount, 50);
+  assert.equal(app.packageEstimateRecommendedQuantityForItem(estimate.items[0], estimate, estimate.groups[0]), 46);
+  assert.match(rowHtml, /estimate-recommended-qty/);
+  assert.match(rowHtml, />46</);
   assert.equal(totals.quoteTotal, 35000);
   assert.equal(totals.laborCost, 50);
   assert.equal(totals.materialCost, 60);
   assert.equal(totals.totalCost, 110);
   assert.equal(totals.profit, 34890);
   assert.equal(totals.profitRate, 34890 / 35000);
+});
+
+test("package estimate totals keep manually edited quantities", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.versions = [{
+      id: "version-a",
+      items: [{ name: "labor/m2", unit: "m2", costAuxiliary: 2, costLabor: 3, quantityFormula: "q=s", sortOrder: 0 }]
+    }];
+    state.activeVersionId = "version-a";
+  `);
+  const packageEntry = {
+    quoteUnitPrice: 300,
+    sections: [{
+      id: "section-a",
+      items: [{ id: "section-item-a", sourceType: "labor", itemName: "labor/m2" }]
+    }]
+  };
+  const estimate = {
+    buildingArea: 100,
+    quoteUnitPrice: 350,
+    groups: [{ id: "group-a", packageSectionId: "section-a", count: 1, area: 20, perimeter: 8, height: 3 }],
+    items: [{
+      id: "labor-a",
+      groupId: "group-a",
+      packageSectionItemId: "section-item-a",
+      sourceType: "labor",
+      itemName: "labor/m2",
+      quantity: 7,
+      includedType: "included"
+    }]
+  };
+
+  const totals = app.calculatePackageEstimateTotals(packageEntry, estimate);
+
+  assert.equal(app.packageEstimateRecommendedQuantityForItem(estimate.items[0], estimate, estimate.groups[0]), 20);
+  assert.equal(estimate.items[0].quantity, 7);
+  assert.equal(totals.laborCost, 35);
+});
+
+test("triple clicking package estimate quantity uses the recommended quantity", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.versions = [{
+      id: "version-a",
+      items: [{ name: "labor/m2", unit: "m2", quantityFormula: "q=s+h", sortOrder: 0 }]
+    }];
+    state.activeVersionId = "version-a";
+    savePackageEstimateItemToServer = () => {};
+    renderPackages = () => {};
+  `);
+  const estimate = { id: "estimate-a" };
+  const group = { id: "group-a", count: 2, area: 20, perimeter: 8, height: 3 };
+  const item = { sourceType: "labor", itemName: "labor/m2", quantity: 7 };
+  const quantityInput = { value: "" };
+  const row = { querySelector: (selector) => selector === ".estimate-item-quantity" ? quantityInput : null };
+
+  app.handlePackageEstimateQuantityTripleClick({ detail: 3, preventDefault() {} }, row, item, estimate, group);
+
+  assert.equal(item.quantity, 46);
+  assert.equal(quantityInput.value, 46);
+});
+
+test("package estimate summary only edits active pricing fields", () => {
+  const app = loadFrontend();
+  const html = app.renderPackageEstimateSummary({ quoteUnitPrice: 300 }, {
+    name: "estimate",
+    buildingArea: 90,
+    area: 20,
+    perimeter: 12,
+    height: 2.7,
+    quoteUnitPrice: 450
+  }, {
+    quoteTotal: 0,
+    laborCost: 0,
+    materialCost: 0,
+    totalCost: 0,
+    profit: 0,
+    profitRate: 0
+  });
+
+  assert.match(html, /estimate-name/);
+  assert.match(html, /estimate-building-area/);
+  assert.match(html, /estimate-price/);
+  assert.doesNotMatch(html, /estimate-area/);
+  assert.doesNotMatch(html, /estimate-perimeter/);
+  assert.doesNotMatch(html, /estimate-height/);
+});
+
+test("package estimate recommended quantity uses the estimate group row even when values are zero", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.versions = [{
+      id: "version-a",
+      items: [{ name: "labor/m2", unit: "m2", quantityFormula: "q=s", sortOrder: 0 }]
+    }];
+    state.activeVersionId = "version-a";
+  `);
+
+  const estimate = { buildingArea: 143, area: 143, perimeter: 60, height: 2.7 };
+  const group = { count: 1, area: 0, perimeter: 0, height: 2.7 };
+  const item = { sourceType: "labor", itemName: "labor/m2" };
+
+  assert.equal(app.packageEstimateRecommendedQuantityForItem(item, estimate, group), 0);
+  assert.equal(app.evaluatePackageItemQuantity("q=s", estimate, group), 0);
 });
 
 test("finds comparable labor and material entries by useful ranking signals", () => {
@@ -744,6 +899,44 @@ test("labor aliases search as display names while keeping the base labor item li
   assert.equal(line.labor, 14);
 });
 
+test("labor aliases count as exact labor matches", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.categories = [{ id: "cat-a", name: "Base", sortOrder: 0 }];
+    state.versions = [{
+      id: "version-a",
+      items: [{
+        name: "ceiling/base",
+        unit: "base",
+        aliases: ["ceiling clothes rack inset"],
+        categoryId: "cat-a",
+        category: "Base",
+        sortOrder: 0
+      }, {
+        name: "ceiling clothes rack inset/base",
+        unit: "base",
+        aliases: [],
+        categoryId: "cat-a",
+        category: "Base",
+        sortOrder: 1
+      }]
+    }];
+    state.activeVersionId = "version-a";
+  `);
+
+  const exactAlias = app.findLaborAliasMatch("ceiling clothes rack inset");
+  const matches = app.prioritizeExactLaborAlias(
+    app.findSimilarItems("ceiling clothes rack inset").slice(0, 5),
+    exactAlias
+  );
+
+  assert.equal(exactAlias.item.name, "ceiling/base");
+  assert.equal(exactAlias.alias, "ceiling clothes rack inset");
+  assert.equal(app.hasLaborPrefixMatch("ceiling clothes rack inset"), true);
+  assert.equal(matches[0].item.name, "ceiling/base");
+  assert.equal(matches[0].alias, "ceiling clothes rack inset");
+});
+
 test("renders labor aliases as readonly child rows under their base item", () => {
   const app = loadFrontend();
   const html = app.renderLaborAliasRows({
@@ -759,6 +952,9 @@ test("renders labor aliases as readonly child rows under their base item", () =>
   assert.match(html, /price-alias-row/);
   assert.match(html, /data-parent-item-name="石膏板吊顶\/米"/);
   assert.match(html, /price-alias-name-input/);
+  assert.match(html, /price-alias-move-up/);
+  assert.match(html, /price-alias-move-down/);
+  assert.match(html, /price-alias-delete/);
   assert.match(html, /石膏板直线吊顶\/米/);
   assert.match(html, /别名/);
   assert.match(html, /20\.00/);
@@ -815,6 +1011,46 @@ test("renders preview table head with and without amount columns", () => {
   assert.equal(head.innerHTML.includes("\u8f85\u6599"), false);
   assert.equal(head.innerHTML.includes("\u91d1\u989d"), false);
   assert.deepEqual(table.toggles.at(-1), ["amount-hidden", true]);
+});
+
+test("renders quote package summaries as common and section-specific text", () => {
+  const app = loadFrontend();
+  const packageEntry = {
+    id: "package-a",
+    name: "Base package",
+    sections: [{
+      id: "section-living",
+      name: "Living",
+      sortOrder: 0,
+      items: [
+        { sourceType: "labor", name: "Base clean/m2", itemName: "Base clean/m2", sortOrder: 0 },
+        { sourceType: "labor", name: "Living feature/m", itemName: "Living feature/m", sortOrder: 1 }
+      ]
+    }, {
+      id: "section-bed",
+      name: "Bedroom",
+      sortOrder: 1,
+      items: [
+        { sourceType: "labor", name: "Base clean/m2", itemName: "Base clean/m2", sortOrder: 0 },
+        { sourceType: "labor", name: "Bedroom feature/m", itemName: "Bedroom feature/m", sortOrder: 1 }
+      ]
+    }]
+  };
+
+  const summary = app.packageQuoteSummary(packageEntry);
+  const html = app.renderPackagePreviewRows(
+    { name: "Base package", packageId: "package-a" },
+    packageEntry,
+    1,
+    true
+  );
+
+  assert.deepEqual(plain(summary.commonItems.map((item) => item.itemName)), ["Base clean/m2"]);
+  assert.deepEqual(plain(summary.specialSections.map((entry) => entry.section.name)), ["Living", "Bedroom"]);
+  assert.match(html, /共有项目/);
+  assert.match(html, /Living feature\/m/);
+  assert.match(html, /Bedroom feature\/m/);
+  assert.doesNotMatch(html, /单价|金额|工程量/);
 });
 
 test("adds package estimate items at requested position and keeps other groups intact", () => {
@@ -1048,6 +1284,39 @@ test("template sync keys allow same material kind in different areas", () => {
   assert.notEqual(app.quoteItemTemplateKey(existingLine), app.templateItemKey(otherArea));
 });
 
+test("template labor aliases display in generated quote lines while keeping base item link", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    state.versions = [{
+      id: "version-a",
+      items: [{
+        name: "ceiling/base",
+        unit: "base",
+        aliases: ["ceiling clothes rack inset"],
+        auxiliary: 6,
+        labor: 14,
+        sortOrder: 0
+      }]
+    }];
+    state.activeVersionId = "version-a";
+  `);
+
+  const templateItem = app.normalizeTemplateItem({
+    sourceType: "labor",
+    itemName: "ceiling/base",
+    displayName: "ceiling clothes rack inset",
+    area: "balcony",
+    quantity: 2
+  });
+  const line = app.makeQuoteItemFromTemplateItem(templateItem, { id: "space-a" }, { priceVersionId: "version-a" });
+
+  assert.equal(templateItem.displayName, "ceiling clothes rack inset");
+  assert.equal(line.engineeringName, "ceiling clothes rack inset");
+  assert.equal(line.priceItemName, "ceiling/base");
+  assert.equal(line.auxiliary, 6);
+  assert.equal(line.labor, 14);
+});
+
 test("package estimate matching allows same material kind in different areas", () => {
   const app = loadFrontend();
 
@@ -1057,6 +1326,31 @@ test("package estimate matching allows same material kind in different areas", (
 
   assert.equal(app.packageEstimateItemMatchesSectionItem(estimateItem, sameArea), true);
   assert.equal(app.packageEstimateItemMatchesSectionItem(estimateItem, otherArea), false);
+});
+
+test("package estimate groups render drag handles and reorder by drop target", () => {
+  const app = loadFrontend();
+  setFrontendState(app, `
+    savePackageEstimateGroupToServer = () => {};
+    renderPackages = () => {};
+  `);
+  const estimate = {
+    id: "estimate-a",
+    items: [],
+    groups: [
+      { id: "group-a", name: "A", sortOrder: 0, collapsed: true },
+      { id: "group-b", name: "B", sortOrder: 1, collapsed: true },
+      { id: "group-c", name: "C", sortOrder: 2, collapsed: true }
+    ]
+  };
+
+  const html = app.renderPackageEstimateGroup(estimate, estimate.groups[0]);
+  app.reorderPackageEstimateGroup(estimate, "group-c", "group-a");
+
+  assert.match(html, /package-estimate-group-drag/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.deepEqual(plain(estimate.groups.map((group) => group.id)), ["group-c", "group-a", "group-b"]);
+  assert.deepEqual(plain(estimate.groups.map((group) => group.sortOrder)), [0, 1, 2]);
 });
 
 test("inserts item and renumbers sortOrder without mutating original array", () => {

@@ -175,6 +175,13 @@ function damagedPortableState() {
 }
 
 function addRoundtripCollections(state) {
+  state.data.quotes[0].spaces.push({
+    id: "group-package-test",
+    name: "package test",
+    type: "package",
+    packageId: "package-test",
+    sortOrder: 1
+  });
   state.data.templates = [{
     id: "template-test",
     name: "template test",
@@ -182,7 +189,7 @@ function addRoundtripCollections(state) {
     sortOrder: 0,
     collapsed: false,
     items: [
-      { id: "template-item-labor", sourceType: "labor", itemName: "labor test/m2", area: "A", quantity: 10, sortOrder: 0 },
+      { id: "template-item-labor", sourceType: "labor", itemName: "labor test/m2", displayName: "labor alias/m2", area: "A", quantity: 10, sortOrder: 0 },
       { id: "template-item-material", sourceType: "material", materialId: "material-test", materialCategory: "tile", area: "B", quantity: 3, sortOrder: 1 }
     ]
   }];
@@ -276,8 +283,10 @@ function inspectSqliteDatabase(dataDir) {
     const group = db.prepare(`
       SELECT
         name,
+        type,
         icon_key AS iconKey,
         template_id AS templateId,
+        package_id AS packageId,
         area,
         perimeter,
         height,
@@ -286,6 +295,11 @@ function inspectSqliteDatabase(dataDir) {
       FROM quote_project_groups
       WHERE id = ?
     `).get("group-test");
+    const packageGroup = db.prepare(`
+      SELECT name, type, package_id AS packageId
+      FROM quote_project_groups
+      WHERE id = ?
+    `).get("group-package-test");
     const line = db.prepare(`
       SELECT
         engineering_name AS engineeringName,
@@ -345,7 +359,7 @@ function inspectSqliteDatabase(dataDir) {
       WHERE id = ?
     `).get("template-test");
     const templateItem = db.prepare(`
-      SELECT item_type AS sourceType, item_name AS itemName, material_kind_id AS materialKindId, material_id AS materialId, area, quantity
+      SELECT item_type AS sourceType, item_name AS itemName, display_name AS displayName, material_kind_id AS materialKindId, material_id AS materialId, area, quantity
       FROM project_group_template_items
       WHERE id = ?
     `).get("template-item-labor");
@@ -379,6 +393,7 @@ function inspectSqliteDatabase(dataDir) {
       customer,
       quote,
       group,
+      packageGroup,
       line,
       laborItem,
       materialKind,
@@ -509,7 +524,7 @@ test("backend API uses an isolated SQLite database", async (t) => {
   assert.equal(inspected.counts.package_estimate_items, 2);
   assert.equal(inspected.counts.customers, 1);
   assert.equal(inspected.counts.quotes, 1);
-  assert.equal(inspected.counts.quote_project_groups, 1);
+  assert.equal(inspected.counts.quote_project_groups, 2);
   assert.equal(inspected.counts.quote_items, 1);
   assert.equal(inspected.quote.projectName, "娴嬭瘯宸ョ▼");
   assert.equal(inspected.quote.showAmountColumns, 1);
@@ -822,6 +837,8 @@ test("backend patch APIs update quote headers and project groups without rewriti
   assert.equal(after.group.name, "group patched");
   assert.equal(after.group.iconKey, "kitchen");
   assert.equal(after.group.templateId, "template-test");
+  assert.equal(after.packageGroup.type, "package");
+  assert.equal(after.packageGroup.packageId, "package-test");
   assert.equal(after.group.area, 22);
   assert.equal(after.group.height, 2.9);
   assert.equal(after.group.collapsed, 1);
@@ -863,6 +880,7 @@ test("backend patch APIs update templates without rewriting quote rows", async (
       templateId: "template-test",
       sourceType: "labor",
       itemName: "labor patched/m2",
+      displayName: "labor patched alias/m2",
       area: "ceiling",
       quantity: 8,
       sortOrder: 0
@@ -880,6 +898,7 @@ test("backend patch APIs update templates without rewriting quote rows", async (
   assert.equal(after.template.collapsed, 1);
   assert.equal(after.template.libraryOrderApplied, 0);
   assert.equal(after.templateItem.itemName, "labor patched/m2");
+  assert.equal(after.templateItem.displayName, "labor patched alias/m2");
   assert.equal(after.templateItem.area, "ceiling");
   assert.equal(after.templateItem.quantity, 8);
   assert.equal(after.line.engineeringName, before.line.engineeringName);
