@@ -121,6 +121,7 @@
  * @typedef {Object} QuoteTotals
  * @property {number} laborSubtotal
  * @property {number} materialSubtotal
+ * @property {number} packageSubtotal
  * @property {number} subtotal
  * @property {number} management
  * @property {number} design

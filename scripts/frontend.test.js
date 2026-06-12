@@ -1045,11 +1045,20 @@ test("renders quote package summaries as common and section-specific text", () =
     true
   );
 
-  assert.deepEqual(plain(summary.commonItems.map((item) => item.itemName)), ["Base clean/m2"]);
-  assert.deepEqual(plain(summary.specialSections.map((entry) => entry.section.name)), ["Living", "Bedroom"]);
-  assert.match(html, /共有项目/);
+  assert.deepEqual(
+    plain(summary.specialSections.map((entry) => entry.section.name)),
+    ["Living", "Bedroom"]
+  );
+  assert.deepEqual(
+    plain(summary.specialSections.map((entry) => entry.items.map((item) => item.itemName))),
+    [
+      ["Base clean/m2", "Living feature/m"],
+      ["Base clean/m2", "Bedroom feature/m"]
+    ]
+  );
   assert.match(html, /Living feature\/m/);
   assert.match(html, /Bedroom feature\/m/);
+  assert.doesNotMatch(html, /共有项目/);
   assert.doesNotMatch(html, /单价|金额|工程量/);
 });
 

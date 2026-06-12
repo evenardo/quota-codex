@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @typedef {import("./types.js").LaborItem} LaborItem
  * @typedef {import("./types.js").MaterialKind} MaterialKind
  * @typedef {import("./types.js").Material} Material
@@ -823,6 +823,7 @@ function normalizeProjectGroup(space, index = 0) {
     perimeter: toNumber(space.perimeter),
     height: toNumber(space.height),
     buildingArea: toNumber(space.buildingArea),
+    unitPricePerSqm: toNumber(space.unitPricePerSqm),
     collapsed: Boolean(space.collapsed),
     sortOrder: Number.isFinite(Number(space.sortOrder)) ? Number(space.sortOrder) : index
   };
@@ -1561,6 +1562,26 @@ function renderLines() {
       saveProjectGroupToServer(space, quote, "已更新报价套餐");
       renderAll();
     });
+    const packageBuildingAreaInput = spaceNode.querySelector(".package-building-area");
+    if (packageBuildingAreaInput) {
+      bindProjectGroupEnterFeedback(packageBuildingAreaInput, spaceNode, true);
+      packageBuildingAreaInput.addEventListener("input", (event) => {
+        space.buildingArea = toNumber(event.target.value);
+        updatePackageAmountCell(spaceNode, space);
+        saveProjectGroupToServer(space, quote, "已自动保存");
+        renderTotalsAndPreview();
+      });
+    }
+    const packageUnitPriceInput = spaceNode.querySelector(".package-unit-price");
+    if (packageUnitPriceInput) {
+      bindProjectGroupEnterFeedback(packageUnitPriceInput, spaceNode, true);
+      packageUnitPriceInput.addEventListener("input", (event) => {
+        space.unitPricePerSqm = toNumber(event.target.value);
+        updatePackageAmountCell(spaceNode, space);
+        saveProjectGroupToServer(space, quote, "已自动保存");
+        renderTotalsAndPreview();
+      });
+    }
     spaceNode.querySelector(".add-space-labor-line")?.addEventListener("click", () => addQuoteItem(space.id, "labor"));
     spaceNode.querySelector(".add-space-material-line")?.addEventListener("click", () => addQuoteItem(space.id, "material"));
     spaceNode.querySelector(".sync-space-template")?.addEventListener("click", () => openSyncProjectGroupTemplateDialog(space.id));
@@ -1594,6 +1615,13 @@ function renderLines() {
   }
 }
 
+function updatePackageAmountCell(spaceNode, space) {
+  const cell = spaceNode?.querySelector?.(".space-amount");
+  if (cell) {
+    cell.textContent = formatMoney(toNumber(space.buildingArea) * toNumber(space.unitPricePerSqm));
+  }
+}
+
 function renderQuotePackageGroup(space) {
   const packageEntry = findPackage(space.packageId);
   const packageOptions = sortedPackages().map((entry) => (
@@ -1613,6 +1641,12 @@ function renderQuotePackageGroup(space) {
           <input class="space-name" type="text" aria-label="套餐名称" value="${escapeHtml(space.name)}">
           <span class="space-count">${escapeHtml(packageEntry ? "套餐" : "未选择")}</span>
         </div>
+        <label class="space-metric">建筑面积（平米）<input class="package-building-area" type="number" min="0" step="0.01" aria-label="建筑面积（平米）" value="${space.buildingArea}"></label>
+        <label class="space-metric">单方报价（元/平米）<input class="package-unit-price" type="number" min="0" step="0.01" aria-label="单方报价（元/平米）" value="${space.unitPricePerSqm}"></label>
+        <div class="space-metric space-amount-cell" aria-label="套餐报价金额">
+          <span class="space-metric-label">金额</span>
+          <strong class="space-amount" data-space-id="${escapeHtml(space.id)}">${formatMoney(toNumber(space.buildingArea) * toNumber(space.unitPricePerSqm))}</strong>
+        </div>
         <select class="quote-package-select" aria-label="选择套餐">
           ${packageOptions}
         </select>
@@ -1631,37 +1665,13 @@ function renderQuotePackageGroup(space) {
 
 function packageQuoteSummary(packageEntry) {
   const sections = (packageEntry?.sections || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
-  const sectionEntries = sections.map((section) => ({
-    section,
-    items: (section.items || []).slice().sort((a, b) => a.sortOrder - b.sortOrder)
-  }));
-  const commonKeys = commonPackageItemKeys(sectionEntries);
-  const commonItems = sectionEntries[0]?.items.filter((item) => commonKeys.has(packageSectionItemKey(item))) || [];
-  const specialSections = sectionEntries.map(({ section, items }) => ({
-    section,
-    items: items.filter((item) => !commonKeys.has(packageSectionItemKey(item)))
-  })).filter((entry) => entry.items.length);
-  return { packageEntry, sections, commonItems, specialSections };
-}
-
-function commonPackageItemKeys(sectionEntries) {
-  if (!sectionEntries.length) return new Set();
-  const counts = new Map();
-  sectionEntries.forEach(({ items }) => {
-    const keys = new Set(items.map((item) => packageSectionItemKey(item)).filter(Boolean));
-    keys.forEach((key) => counts.set(key, (counts.get(key) || 0) + 1));
-  });
-  return new Set([...counts.entries()]
-    .filter(([, count]) => count === sectionEntries.length)
-    .map(([key]) => key));
-}
-
-function packageSectionItemKey(item) {
-  if (!item) return "";
-  if (item.sourceType === "material") {
-    return `material:${item.materialKindId || item.materialId || normalizeName(item.itemName || item.name)}`;
-  }
-  return `labor:${normalizeName(item.itemName || item.name)}`;
+  const specialSections = sections
+    .map((section) => ({
+      section,
+      items: (section.items || []).slice().sort((a, b) => a.sortOrder - b.sortOrder)
+    }))
+    .filter((entry) => entry.items.length);
+  return { packageEntry, sections, specialSections };
 }
 
 function packageSectionItemQuoteLabel(item) {
@@ -1672,13 +1682,9 @@ function packageSectionItemQuoteLabel(item) {
 
 function renderPackageQuoteSummary(packageEntry) {
   const summary = packageQuoteSummary(packageEntry);
-  if (!summary.sections.length) return `<p class="muted">这个套餐还没有项目组合。</p>`;
+  if (!summary.specialSections.length) return `<p class="muted">这个套餐还没有项目组合。</p>`;
   return `
     <div class="package-quote-summary">
-      <div>
-        <strong>共有项目</strong>
-        ${renderPackageQuoteItemList(summary.commonItems, "无共有项目")}
-      </div>
       ${summary.specialSections.map(({ section, items }) => `
         <div>
           <strong>${escapeHtml(section.name)}</strong>
@@ -1691,7 +1697,28 @@ function renderPackageQuoteSummary(packageEntry) {
 
 function renderPackageQuoteItemList(items, emptyText = "无项目") {
   if (!items.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
-  return `<p>${items.map((item) => escapeHtml(packageSectionItemQuoteLabel(item))).join("、")}</p>`;
+  return `<div class="package-quote-item-list">${items.map((item) => renderPackageQuoteItemReadonlyRow(item)).join("")}</div>`;
+}
+
+function renderPackageQuoteItemReadonlyRow(item) {
+  const typeLabel = item.sourceType === "material" ? "装修主材" : "清工辅料";
+  const name = packageSectionItemDisplayName(item) || item.itemName || item.name || "";
+  const part = item.area || item.provider || "";
+  const processNote = packageSectionItemProcessNote(item);
+  return `
+    <div class="line-item line-item-readonly package-quote-item" data-item-id="${escapeHtml(item.id)}">
+      <div class="package-quote-type">${escapeHtml(typeLabel)}</div>
+      <div class="package-quote-name">${escapeHtml(name)}</div>
+      <div class="package-quote-part">${escapeHtml(part)}</div>
+      <div class="package-quote-process">${processNote ? escapeHtml(processNote) : ""}</div>
+    </div>
+  `;
+}
+
+function packageSectionItemProcessNote(item) {
+  if (item.sourceType === "material") return "";
+  const versionId = currentQuote()?.priceVersionId || currentVersion()?.id;
+  return processNoteForQuoteItem({ priceItemName: item.itemName }, versionId);
 }
 
 function renderProjectGroupInsertSlot(position) {
@@ -1758,9 +1785,6 @@ function renderLaborQuoteItem(line, quote) {
     const materialOptions = item?.usesMaterial
       ? materialOptionsForItem(item, line.materialId, "选主材")
       : `<option value="">无</option>`;
-    const spaceOptions = sortedProjectGroups(quote).map((space) => (
-      `<option value="${escapeHtml(space.id)}" ${space.id === line.spaceId ? "selected" : ""}>${escapeHtml(projectGroupDisplayName(space))}</option>`
-    )).join("");
     return `
       <div class="line-item" data-line-id="${escapeHtml(line.id)}">
         <div class="line-field project-field">
@@ -1802,10 +1826,6 @@ function renderLaborQuoteItem(line, quote) {
           <label>金额</label>
           <button class="amount jump-price-item" type="button" ${line.priceItemName ? "" : "disabled"}>${formatMoney(amount)}</button>
         </div>
-        <div class="line-field move-field">
-          <label>移到组合</label>
-          <select class="line-space" aria-label="移到项目组合">${spaceOptions}</select>
-        </div>
         <div class="line-field action-field">
           <label class="action-label" aria-hidden="true">&nbsp;</label>
           <button class="remove-btn" type="button" aria-label="删除">×</button>
@@ -1823,9 +1843,6 @@ function renderMaterialQuoteItem(line, quote) {
   const amount = toNumber(line.quantity) * unitPrice;
   const quoteDiff = materialPriceDifference(line, "quote");
   const costDiff = materialPriceDifference(line, "cost");
-  const spaceOptions = sortedProjectGroups(quote).map((space) => (
-    `<option value="${escapeHtml(space.id)}" ${space.id === line.spaceId ? "selected" : ""}>${escapeHtml(projectGroupDisplayName(space))}</option>`
-  )).join("");
   return `
     <div class="line-item material-line" data-line-id="${escapeHtml(line.id)}">
       <div class="line-field project-field">
@@ -1870,10 +1887,6 @@ function renderMaterialQuoteItem(line, quote) {
         <label>金额</label>
         <button class="amount jump-price-item jump-material-item" type="button" ${line.materialId ? "" : "disabled"}>${formatMoney(amount)}</button>
       </div>
-      <div class="line-field move-field">
-        <label>移到组合</label>
-        <select class="line-space" aria-label="移到项目组合">${spaceOptions}</select>
-      </div>
       <div class="line-field action-field">
         <label class="action-label" aria-hidden="true">&nbsp;</label>
         <button class="remove-btn" type="button" aria-label="删除">×</button>
@@ -1902,9 +1915,6 @@ function bindQuoteItem(node, quote) {
     onKeydown: (event) => handleSuggestionKeys(event, suggestions, line)
   });
   bindQuoteItemPartInput(node, line);
-  node.querySelector(".line-space").addEventListener("change", (event) => {
-    moveQuoteItemToProjectGroup(line.id, event.target.value);
-  });
   const materialSelect = node.querySelector(".line-material");
   if (materialSelect) {
     materialSelect.addEventListener("change", (event) => {
@@ -1970,9 +1980,6 @@ function bindMaterialQuoteItem(node, quote, line) {
     onKeydown: (event) => handleMaterialSuggestionKeys(event, suggestions, line)
   });
   bindQuoteItemPartInput(node, line);
-  node.querySelector(".line-space").addEventListener("change", (event) => {
-    moveQuoteItemToProjectGroup(line.id, event.target.value);
-  });
   node.querySelector(".line-material-product")?.addEventListener("change", (event) => {
     const material = findMaterial(event.target.value);
     line.materialId = material?.id || "";
@@ -5044,10 +5051,6 @@ function renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColum
       <td></td>
       <td colspan="${colspan}">
         <div class="preview-package-detail">
-          <section>
-            <strong>共有项目</strong>
-            ${renderPreviewPackageItemList(summary.commonItems, "无共有项目")}
-          </section>
           ${summary.specialSections.map(({ section, items }) => `
             <section>
               <strong>${escapeHtml(section.name)}</strong>
@@ -5062,7 +5065,7 @@ function renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColum
 
 function renderPreviewPackageItemList(items, emptyText = "无项目") {
   if (!items.length) return `<p>${escapeHtml(emptyText)}</p>`;
-  return `<p>${items.map((item) => escapeHtml(packageSectionItemQuoteLabel(item))).join("、")}</p>`;
+  return `<div class="package-quote-item-list">${items.map((item) => renderPackageQuoteItemReadonlyRow(item)).join("")}</div>`;
 }
 
 function renderPreviewTableHead(showAmountColumns = true) {
@@ -5095,12 +5098,17 @@ function calculateTotals(quote = currentQuote()) {
     else sum.laborSubtotal += amount;
     return sum;
   }, { laborSubtotal: 0, materialSubtotal: 0 });
-  const subtotal = subtotals.laborSubtotal + subtotals.materialSubtotal;
+  const packageSubtotal = (quote?.spaces || []).reduce((sum, space) => {
+    const amount = toNumber(space.buildingArea) * toNumber(space.unitPricePerSqm);
+    return sum + amount;
+  }, 0);
+  const subtotal = subtotals.laborSubtotal + subtotals.materialSubtotal + packageSubtotal;
   const management = subtotal * toNumber(quote?.managementRate) / 100;
   const design = subtotal * toNumber(quote?.designRate) / 100;
   const tax = subtotal * toNumber(quote?.taxRate) / 100;
   return {
     ...subtotals,
+    packageSubtotal,
     subtotal,
     management,
     design,
@@ -5840,29 +5848,6 @@ function toggleProjectGroup(spaceId) {
   }
   quote.spaces.forEach((entry) => saveProjectGroupToServer(entry, quote, space.collapsed ? "已折叠项目组合" : "已展开项目组合"));
   renderLines();
-}
-
-function moveQuoteItemToProjectGroup(lineId, targetSpaceId) {
-  const quote = currentQuote();
-  const lineIndex = quote.lines.findIndex((line) => line.id === lineId);
-  if (lineIndex < 0) return;
-  const line = quote.lines[lineIndex];
-  const targetSpace = quote.spaces.find((space) => space.id === targetSpaceId);
-  if (!targetSpace) {
-    renderLines();
-    return;
-  }
-  quote.lines.splice(lineIndex, 1);
-  line.spaceId = targetSpaceId;
-  const recommendedQuantity = recommendedQuantityForQuoteItem(line, quote);
-  if (recommendedQuantity !== null) line.quantity = roundQuantity(recommendedQuantity);
-  const targetIndexes = quote.lines
-    .map((entry, index) => ({ entry, index }))
-    .filter((item) => item.entry.spaceId === targetSpaceId);
-  const lastTargetIndex = targetIndexes[targetIndexes.length - 1]?.index;
-  quote.lines.splice(lastTargetIndex === undefined ? quote.lines.length : lastTargetIndex + 1, 0, line);
-  quote.lines.forEach((entry) => saveQuoteItemToServer(entry, quote, "已移动工程项目"));
-  renderAll();
 }
 
 function setQuoteField(key, value, rerender = false) {
