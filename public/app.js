@@ -10,7 +10,7 @@
 
 const STORAGE_KEY = "quote-tool-state-v2";
 const OLD_STORAGE_KEY = "quote-tool-state-v1";
-const APP_BUILD = "20260611-0028";
+const APP_BUILD = "20260611-0036";
 const DEFAULT_MANAGEMENT_RATE = 8;
 const DEFAULT_DESIGN_RATE = 6;
 const DEFAULT_TAX_RATE = 9;
@@ -892,6 +892,10 @@ function projectGroupDisplayName(space) {
   return space.name || "";
 }
 
+function projectGroupPreviewMeta(space) {
+  return `面积 ${formatNumber(space?.area)} 平米`;
+}
+
 function materialsForCategory(category = "") {
   return state.materials
     .filter((material) => !category || material.primaryCategory === category)
@@ -1280,6 +1284,12 @@ function processNoteForQuoteItem(line, versionId = currentQuote()?.priceVersionI
     item?.description
   ].map((value) => String(value || "").trim()).filter(Boolean);
   return [...new Set(parts)].join("；");
+}
+
+function materialQualityReportForQuoteItem(line) {
+  const material = findMaterial(line?.materialId);
+  const kind = findGenericMaterial(line?.materialKindId) || findGenericMaterial(material?.materialKindId);
+  return String(material?.note || kind?.note || line?.note || "").trim();
 }
 
 function makeQuoteItem(itemName = "", area = "", quantity = 0, spaceId = "") {
@@ -1673,8 +1683,8 @@ function renderQuotePackageGroup(space) {
             </div>
           </div>
           <label class="space-package-label-row">
-            <span class="space-package-label-text">报价单视图中的"套餐"字样</span>
             <input class="space-package-label" type="text" aria-label="报价单视图中的套餐字样" value="${escapeHtml(space.packageLabel || "套餐")}" placeholder="套餐">
+            <span class="space-package-label-text">（套餐部分的标题）</span>
           </label>
         </div>
         <div class="space-sub-row">
@@ -3101,7 +3111,7 @@ function renderMaterials() {
       <td><input class="material-price-input" type="number" min="0" step="0.01" aria-label="单价" value="${material.quoteUnitPrice}"></td>
       <td><input class="material-cost-input" type="number" min="0" step="0.01" aria-label="成本单价" value="${material.costUnitPrice}"></td>
       <td><input class="material-formula-input" type="text" aria-label="公式预留" placeholder="后续公式" value="${escapeHtml(material.pricingFormula)}"></td>
-      <td><input class="material-note-input" type="text" aria-label="备注" value="${escapeHtml(material.note)}"></td>
+      <td><input class="material-note-input" type="text" aria-label="质检报告" value="${escapeHtml(material.note)}"></td>
       <td><button class="material-calculator-toggle small ghost" type="button">换算</button></td>
       <td class="price-actions-cell"><button class="material-delete danger small" type="button">删除</button></td>
     </tr>
@@ -3257,7 +3267,7 @@ function renderGenericMaterialLibrary() {
         <td><input class="generic-material-unit" type="text" aria-label="单位" value="${escapeHtml(kind.unit)}"></td>
         <td><input class="generic-material-price" type="number" min="0" step="0.01" aria-label="基准单价" value="${kind.quoteUnitPrice}"></td>
         <td><input class="generic-material-cost" type="number" min="0" step="0.01" aria-label="基准成本" value="${kind.costUnitPrice}"></td>
-        <td><input class="generic-material-note" type="text" aria-label="备注" value="${escapeHtml(kind.note)}"></td>
+        <td><input class="generic-material-note" type="text" aria-label="质检报告" value="${escapeHtml(kind.note)}"></td>
         <td><button class="generic-material-calculator-toggle small ghost" type="button">换算</button></td>
         <td><button class="generic-material-delete small danger" type="button">删除</button></td>
       </tr>
@@ -3310,7 +3320,7 @@ function renderGenericMaterialLibrary() {
             <th>单位</th>
             <th>基准单价</th>
             <th>基准成本</th>
-            <th>备注</th>
+            <th>质检报告</th>
             <th>换算</th>
             <th>删除</th>
           </tr>
@@ -3356,7 +3366,7 @@ function renderSupplierMaterialLibrary(rows) {
             <th>单价</th>
             <th>成本单价</th>
             <th>公式</th>
-            <th>备注</th>
+            <th>质检报告</th>
             <th>换算</th>
             <th>删除</th>
           </tr>
@@ -5050,11 +5060,7 @@ function renderTotalsAndPreview() {
   const groupsHtml = regularGroups.map((space) => {
     const spaceLines = quoteItemsForProjectGroup(quote, space.id);
     if (!spaceLines.length) return "";
-    const meta = [
-        `面积 ${formatNumber(space.area)} 平米`,
-        `周长 ${formatNumber(space.perimeter)} 米`,
-        `高度 ${formatNumber(space.height)} 米`
-      ].join("　");
+    const meta = projectGroupPreviewMeta(space);
     return `
       <tr class="preview-space-row">
         <td></td>
@@ -5066,8 +5072,9 @@ function renderTotalsAndPreview() {
     const selectedKind = findGenericMaterial(line.materialKindId) || findGenericMaterial(selectedMaterial?.materialKindId);
     const unitPrice = calculateQuoteItemUnitPrice(line);
     const amount = toNumber(line.quantity) * unitPrice;
-    const processNote = processNoteForQuoteItem(line, quote.priceVersionId);
     const lineTypeLabel = isMaterialQuoteItem(line) ? "装修主材" : "清工辅料";
+    const previewNoteTitle = isMaterialQuoteItem(line) ? "质检报告" : "工艺说明";
+    const previewNote = isMaterialQuoteItem(line) ? materialQualityReportForQuoteItem(line) : processNoteForQuoteItem(line, quote.priceVersionId);
     rowIndex += 1;
     return `
       <tr class="preview-main-row">
@@ -5084,10 +5091,10 @@ function renderTotalsAndPreview() {
         <td>${formatMoney(amount)}</td>
         ` : ""}
       </tr>
-      ${processNote ? `
+      ${previewNote ? `
       <tr class="preview-note-row">
         <td></td>
-        <td colspan="${showAmountColumns ? 5 : 3}"><span>工艺说明</span>${escapeHtml(processNote)}</td>
+        <td colspan="${showAmountColumns ? 5 : 3}"><span>${escapeHtml(previewNoteTitle)}</span>${escapeHtml(previewNote)}</td>
       </tr>
       ` : ""}
     `;
@@ -5104,28 +5111,16 @@ function renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColum
   const unitPricePerSqm = toNumber(space.unitPricePerSqm);
   const packageTotal = buildingArea > 0 && unitPricePerSqm > 0 ? buildingArea * unitPricePerSqm : 0;
   const packageName = space.name || packageEntry.name || "套餐";
+  const packageMeta = `面积 ${formatNumber(buildingArea)} 平米`;
   return `
-    ${summary.specialSections.length ? `
-    <tr class="preview-package-items-row">
-      <td colspan="${colspan}">
-        <div class="preview-package-items">
-          ${summary.specialSections.map(({ section, items }) => `
-            <section>
-              <strong>${escapeHtml(packageSectionQuoteName(section))}</strong>
-              ${renderPackageQuoteItemList(items, "无特殊项目")}
-            </section>
-          `).join("")}
-        </div>
-      </td>
-    </tr>
-    ` : ""}
+    ${renderPackagePreviewDetailRows(summary.specialSections, colspan)}
     <tr class="preview-space-row preview-package-section-row">
       <td></td>
-      <td colspan="${showAmountColumns ? 5 : 3}"><strong>${escapeHtml(space.packageLabel || "套餐")}</strong></td>
+      <td colspan="${showAmountColumns ? 5 : 3}"><strong>${escapeHtml(space.packageLabel || "套餐")}</strong><span>${escapeHtml(packageMeta)}</span></td>
     </tr>
     <tr class="preview-main-row preview-package-summary-row">
       <td>${rowIndex}</td>
-      <td><strong>${escapeHtml(packageName)}</strong></td>
+      <td><span class="preview-type-label">套餐算法</span><strong>${escapeHtml(packageName)}</strong></td>
       <td>${buildingArea > 0 ? formatNumber(buildingArea) : "—"}</td>
       <td>${buildingArea > 0 ? "平米" : ""}</td>
       ${showAmountColumns ? `
@@ -5133,7 +5128,24 @@ function renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColum
       <td>${packageTotal > 0 ? formatMoney(packageTotal) : "—"}</td>
       ` : ""}
     </tr>
+    <tr class="preview-note-row preview-package-summary-note-row">
+      <td></td>
+      <td colspan="${showAmountColumns ? 5 : 3}"><span>工艺说明</span>具体内容参看上面的套餐内容说明</td>
+    </tr>
   `;
+}
+
+function renderPackagePreviewDetailRows(specialSections, colspan) {
+  return specialSections.map(({ section, items }) => `
+    <tr class="preview-package-section-title-row">
+      <td colspan="${colspan}"><strong>${escapeHtml(packageSectionQuoteName(section))}</strong></td>
+    </tr>
+    ${(items.length ? items : []).map((item) => `
+      <tr class="preview-package-item-row">
+        <td colspan="${colspan}">${renderPackageQuoteItemReadonlyRow(item)}</td>
+      </tr>
+    `).join("")}
+  `).join("");
 }
 
 function renderPreviewPackageItemList(items, emptyText = "无项目") {
@@ -6181,6 +6193,7 @@ function renderPackageSections(packageEntry) {
     <div class="package-section ${section.collapsed ? "collapsed" : ""}" data-section-id="${escapeHtml(section.id)}" draggable="true">
       <div class="package-section-head">
         <button class="package-section-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动分类排序" aria-label="点击展开或收缩，拖动分类排序" aria-expanded="${String(!section.collapsed)}">⋮⋮</button>
+        <span class="package-section-type-pill">套餐项目</span>
         <input class="package-section-name" type="text" value="${escapeHtml(section.name)}" placeholder="项目组合名称">
         <label class="package-section-original-name" title="原始模板名称（可留空）">
           <span>原名</span>

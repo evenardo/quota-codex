@@ -164,6 +164,16 @@ test("normalizes quote defaults and amount-column visibility", () => {
   assert.equal(quote.showAmountColumns, false);
 });
 
+test("quote preview project group meta only shows area", () => {
+  const app = loadFrontend();
+
+  const meta = app.projectGroupPreviewMeta({ area: 90, perimeter: 18, height: 2.7 });
+
+  assert.equal(meta, "\u9762\u79ef 90 \u5e73\u7c73");
+  assert.equal(meta.includes("\u5468\u957f"), false);
+  assert.equal(meta.includes("\u9ad8\u5ea6"), false);
+});
+
 test("normalizes labor items, materials, categories, and package estimates", () => {
   const app = loadFrontend();
   setFrontendState(app, `
@@ -650,6 +660,8 @@ test("calculates quote item prices, costs, recommended quantity, and process not
     state.activeQuoteId = "quote-a";
   `);
   const state = getFrontendState(app);
+  state.genericMaterials[0].note = "Kind quality";
+  state.materials[0].note = "Material quality";
   const line = state.quotes[0].lines[0];
 
   assert.equal(app.calculateQuoteItemUnitPrice(line), 5);
@@ -659,6 +671,8 @@ test("calculates quote item prices, costs, recommended quantity, and process not
   assert.equal(app.calculateQuoteItemCostUnitPrice({ sourceType: "material", materialKindId: "generic-material-地砖", quantity: 10 }), 60);
   assert.equal(app.materialPriceDifference({ materialKindId: "generic-material-地砖", materialId: "material-tile-a" }, "quote"), 10);
   assert.equal(app.materialPriceDifference({ materialKindId: "generic-material-地砖", materialId: "material-tile-a" }, "cost"), 8);
+  assert.equal(app.materialQualityReportForQuoteItem({ materialKindId: state.genericMaterials[0].id, materialId: state.materials[0].id }), "Material quality");
+  assert.equal(app.materialQualityReportForQuoteItem({ materialKindId: state.genericMaterials[0].id }), "Kind quality");
   assert.equal(app.recommendedQuantityForQuoteItem(line, state.quotes[0]), 45);
   assert.equal(app.processNoteForQuoteItem(line, "version-a"), "Category note\uff1bItem note");
   assert.equal(app.calculateQuoteItemUnitPrice({ legacyUnitPrice: 88, auxiliary: 0, labor: 0 }), 88);
@@ -1041,7 +1055,7 @@ test("renders quote package summaries as common and section-specific text", () =
 
   const summary = app.packageQuoteSummary(packageEntry);
   const html = app.renderPackagePreviewRows(
-    { name: "Base package", packageId: "package-a" },
+    { name: "Base package", packageId: "package-a", buildingArea: 90 },
     packageEntry,
     1,
     true
@@ -1060,6 +1074,13 @@ test("renders quote package summaries as common and section-specific text", () =
   );
   assert.match(html, /Living feature\/m/);
   assert.match(html, /Bedroom feature\/m/);
+  assert.match(html, /\u5957\u9910\u7b97\u6cd5/);
+  assert.match(html, /\u9762\u79ef 90 \u5e73\u7c73/);
+  assert.match(html, /\u5177\u4f53\u5185\u5bb9\u53c2\u770b\u4e0a\u9762\u7684\u5957\u9910\u5185\u5bb9\u8bf4\u660e/);
+  assert.match(html, /preview-package-summary-note-row/);
+  assert.match(html, /preview-package-section-title-row/);
+  assert.match(html, /preview-package-item-row/);
+  assert.doesNotMatch(html, /preview-package-items-row/);
   assert.match(html, /Living renamed/);
   assert.match(html, /Bedroom renamed/);
   assert.doesNotMatch(html, /\u9879\u76ee\u7ec4/);
@@ -1113,6 +1134,8 @@ test("renders package section insert slots around every package section item", (
 
   assert.equal((html.match(/package-section-insert-slot/g) || []).length, 3);
   assert.equal(html.includes("package-section-drag"), true);
+  assert.equal(html.includes("package-section-type-pill"), true);
+  assert.equal(html.includes("\u5957\u9910\u9879\u76ee"), true);
   assert.equal(html.includes("package-section-count"), true);
   assert.equal(html.includes('data-position="0"'), true);
   assert.equal(html.includes('data-position="1"'), true);
