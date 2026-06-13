@@ -100,14 +100,14 @@ function bindElements() {
     "saveStatus", "printBtn", "resetBtn", "addQuoteBtn", "addQuotePackageBtn",
     "customerName", "customerContact", "customerPhone", "customerAddress", "customerList", "quoteList",
     "projectName", "editorProjectNameTitle", "showAmountColumns", "clientName", "clientPhone", "clientAddress", "quoteDate", "priceVersion", "libraryPriceVersion",
-    "cloneVersionBtn", "renameVersionBtn", "deleteVersionBtn", "managementRate", "designRate", "taxRate",
-    "laborSubtotalText", "materialSubtotalText", "managementText", "designText", "taxText", "grandTotalText", "quoteLines",
+    "cloneVersionBtn", "renameVersionBtn", "deleteVersionBtn", "managementRate", "designRate", "taxRate", "includeManagementFee", "includeDesignFee", "includeTax", "managementRow", "designRow", "taxRow",
+    "laborSubtotalText", "materialSubtotalText", "packageSubtotalText", "packageSubtotalRow", "managementText", "designText", "taxText", "grandTotalText", "quoteLines",
     "priceSearch", "priceCount", "priceList", "addPriceItemBtn", "previewTitle", "previewMeta", "previewTotal",
     "materialSearch", "materialCount", "materialList", "addMaterialBtn",
     "templateList", "templateCount", "addTemplateBtn",
     "packageList", "packageCount", "packageDetail", "addPackageBtn",
     "categoryList", "addCategoryBtn", "toggleCategoryLibraryBtn", "categoryLibraryPanel",
-    "previewTableHead", "previewRows", "previewLaborSubtotal", "previewMaterialSubtotal", "previewManagement", "previewDesign", "previewTax", "previewGrand"
+    "previewTableHead", "previewRows", "previewLaborSubtotal", "previewMaterialSubtotal", "previewPackageSubtotal", "previewPackageSubtotalRow", "previewManagement", "previewDesign", "previewTax", "previewGrand", "previewManagementRow", "previewDesignRow", "previewTaxRow"
   ].forEach((id) => {
     els[id] = document.getElementById(id);
   });
@@ -378,6 +378,7 @@ function normalizePackageSection(section, index = 0) {
   return {
     id: section?.id || makeId("package-section"),
     name: String(section?.name || "").trim() || `说明分类 ${index + 1}`,
+    originalTemplateName: String(section?.originalTemplateName || "").trim(),
     sortOrder: Number.isFinite(Number(section?.sortOrder)) ? Number(section.sortOrder) : index,
     collapsed: Boolean(section?.collapsed),
     items: (section?.items || []).map((item, itemIndex) => normalizePackageSectionItem(item, itemIndex))
@@ -675,6 +676,9 @@ function normalizeQuote(quote) {
     managementRate,
     designRate: quote.designRate ?? DEFAULT_DESIGN_RATE,
     taxRate,
+    includeManagementFee: quote.includeManagementFee !== false && quote.includeManagementFee !== 0,
+    includeDesignFee: quote.includeDesignFee !== false && quote.includeDesignFee !== 0,
+    includeTax: quote.includeTax !== false && quote.includeTax !== 0,
     showAmountColumns: quote.showAmountColumns !== false && quote.showAmountColumns !== 0,
     spaces: quote.spaces || [],
     lines: quote.lines || []
@@ -814,6 +818,7 @@ function normalizeProjectGroup(space, index = 0) {
   return {
     id: space.id || makeId("group"),
     name: String(space.name || "项目组合").trim() || "项目组合",
+    packageLabel: String(space.packageLabel || "套餐").trim() || "套餐",
     type,
     workType: space.workType === "material" ? "material" : "labor",
     iconKey: validProjectGroupIconKey(space.iconKey) || defaultProjectGroupIconKey(space),
@@ -964,6 +969,21 @@ function bindEvents() {
   if (els.showAmountColumns) {
     els.showAmountColumns.addEventListener("change", () => {
       setQuoteField("showAmountColumns", els.showAmountColumns.checked, true);
+    });
+  }
+  if (els.includeManagementFee) {
+    els.includeManagementFee.addEventListener("change", () => {
+      setQuoteField("includeManagementFee", els.includeManagementFee.checked, true);
+    });
+  }
+  if (els.includeDesignFee) {
+    els.includeDesignFee.addEventListener("change", () => {
+      setQuoteField("includeDesignFee", els.includeDesignFee.checked, true);
+    });
+  }
+  if (els.includeTax) {
+    els.includeTax.addEventListener("change", () => {
+      setQuoteField("includeTax", els.includeTax.checked, true);
     });
   }
   ["customerName", "customerContact", "customerPhone", "customerAddress"].forEach((id) => {
@@ -1405,6 +1425,9 @@ function renderSettings() {
   els.managementRate.value = quote.managementRate;
   els.designRate.value = quote.designRate;
   els.taxRate.value = quote.taxRate;
+  if (els.includeManagementFee) els.includeManagementFee.checked = quote.includeManagementFee !== false;
+  if (els.includeDesignFee) els.includeDesignFee.checked = quote.includeDesignFee !== false;
+  if (els.includeTax) els.includeTax.checked = quote.includeTax !== false;
   const versionOptions = versionsNewestFirst().map((version) => (
     `<option value="${escapeHtml(version.id)}">${escapeHtml(version.name)}</option>`
   )).join("");
@@ -1522,6 +1545,17 @@ function renderLines() {
       saveProjectGroupToServer(space, quote, "已自动保存");
       renderAll();
     });
+    const packageLabelInput = spaceNode.querySelector(".space-package-label");
+    if (packageLabelInput) {
+      bindProjectGroupEnterFeedback(packageLabelInput, spaceNode);
+      packageLabelInput.addEventListener("input", (event) => {
+        space.packageLabel = String(event.target.value || "").trim() || "套餐";
+        const badge = spaceNode.querySelector(".space-count");
+        if (badge) badge.textContent = space.packageLabel;
+        saveProjectGroupToServer(space, quote, "已自动保存");
+        renderTotalsAndPreview();
+      });
+    }
     const areaInput = spaceNode.querySelector(".space-area");
     if (areaInput) {
       bindProjectGroupEnterFeedback(areaInput, spaceNode, true);
@@ -1638,20 +1672,25 @@ function renderQuotePackageGroup(space) {
               ${renderProjectGroupIconChoices(space.iconKey)}
             </div>
           </div>
+          <label class="space-package-label-row">
+            <span class="space-package-label-text">报价单视图中的"套餐"字样</span>
+            <input class="space-package-label" type="text" aria-label="报价单视图中的套餐字样" value="${escapeHtml(space.packageLabel || "套餐")}" placeholder="套餐">
+          </label>
+        </div>
+        <div class="space-sub-row">
           <input class="space-name" type="text" aria-label="套餐名称" value="${escapeHtml(space.name)}">
-          <span class="space-count">${escapeHtml(packageEntry ? "套餐" : "未选择")}</span>
-        </div>
-        <label class="space-metric">建筑面积（平米）<input class="package-building-area" type="number" min="0" step="0.01" aria-label="建筑面积（平米）" value="${space.buildingArea}"></label>
-        <label class="space-metric">单方报价（元/平米）<input class="package-unit-price" type="number" min="0" step="0.01" aria-label="单方报价（元/平米）" value="${space.unitPricePerSqm}"></label>
-        <div class="space-metric space-amount-cell" aria-label="套餐报价金额">
-          <span class="space-metric-label">金额</span>
-          <strong class="space-amount" data-space-id="${escapeHtml(space.id)}">${formatMoney(toNumber(space.buildingArea) * toNumber(space.unitPricePerSqm))}</strong>
-        </div>
-        <select class="quote-package-select" aria-label="选择套餐">
-          ${packageOptions}
-        </select>
-        <div class="space-actions">
-          <button class="delete-space danger small" type="button">删除套餐</button>
+          <select class="quote-package-select" aria-label="选择套餐">
+            ${packageOptions}
+          </select>
+          <div class="space-actions">
+            <button class="delete-space danger small" type="button">删除套餐</button>
+          </div>
+          <label class="space-metric">建筑面积（平米）<input class="package-building-area" type="number" min="0" step="0.01" aria-label="建筑面积（平米）" value="${space.buildingArea}"></label>
+          <label class="space-metric">单方报价（元/平米）<input class="package-unit-price" type="number" min="0" step="0.01" aria-label="单方报价（元/平米）" value="${space.unitPricePerSqm}"></label>
+          <div class="space-metric space-amount-cell" aria-label="套餐报价金额">
+            <span class="space-metric-label">金额</span>
+            <strong class="space-amount" data-space-id="${escapeHtml(space.id)}">${formatMoney(toNumber(space.buildingArea) * toNumber(space.unitPricePerSqm))}</strong>
+          </div>
         </div>
       </div>
       ${space.collapsed ? "" : `
@@ -4964,30 +5003,47 @@ function renderTotalsAndPreview() {
   if (!quote) return;
   const totals = calculateTotals(quote);
   const showAmountColumns = quote.showAmountColumns !== false;
+  const hasPackage = (quote?.spaces || []).some((space) => space.type === "package" && findPackage(space.packageId));
+  const includeManagementFee = quote.includeManagementFee !== false;
+  const includeDesignFee = quote.includeDesignFee !== false;
+  const includeTax = quote.includeTax !== false;
   renderPreviewTableHead(showAmountColumns);
   els.laborSubtotalText.textContent = formatMoney(totals.laborSubtotal);
   els.materialSubtotalText.textContent = formatMoney(totals.materialSubtotal);
+  if (els.packageSubtotalText) els.packageSubtotalText.textContent = formatMoney(totals.packageSubtotal);
+  if (els.packageSubtotalRow) els.packageSubtotalRow.hidden = !hasPackage;
   els.managementText.textContent = formatMoney(totals.management);
   els.designText.textContent = formatMoney(totals.design);
   els.taxText.textContent = formatMoney(totals.tax);
+  if (els.managementRow) els.managementRow.hidden = !includeManagementFee;
+  if (els.designRow) els.designRow.hidden = !includeDesignFee;
+  if (els.taxRow) els.taxRow.hidden = !includeTax;
   els.grandTotalText.textContent = formatMoney(totals.grand);
   els.previewTitle.textContent = `${quote.projectName || "工程"}工程量`;
   els.previewMeta.textContent = `客户：${quote.clientName || "未填写"}　报价日期：${quote.quoteDate || ""}　工费版本：${currentVersion()?.name || ""}`;
   els.previewTotal.textContent = formatMoney(totals.grand);
   els.previewLaborSubtotal.textContent = formatMoney(totals.laborSubtotal);
   els.previewMaterialSubtotal.textContent = formatMoney(totals.materialSubtotal);
+  if (els.previewPackageSubtotal) els.previewPackageSubtotal.textContent = formatMoney(totals.packageSubtotal);
+  if (els.previewPackageSubtotalRow) els.previewPackageSubtotalRow.hidden = !hasPackage;
   els.previewManagement.textContent = formatMoney(totals.management);
   els.previewDesign.textContent = formatMoney(totals.design);
   els.previewTax.textContent = formatMoney(totals.tax);
+  if (els.previewManagementRow) els.previewManagementRow.hidden = !includeManagementFee;
+  if (els.previewDesignRow) els.previewDesignRow.hidden = !includeDesignFee;
+  if (els.previewTaxRow) els.previewTaxRow.hidden = !includeTax;
   els.previewGrand.textContent = formatMoney(totals.grand);
   let rowIndex = 0;
-  els.previewRows.innerHTML = sortedProjectGroups(quote).map((space) => {
-    if (space.type === "package") {
-      const packageEntry = findPackage(space.packageId);
-      if (!packageEntry) return "";
-      rowIndex += 1;
-      return renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColumns);
-    }
+  const allGroups = sortedProjectGroups(quote);
+  const packageGroups = allGroups.filter((space) => space.type === "package");
+  const regularGroups = allGroups.filter((space) => space.type !== "package");
+  const packageHtml = packageGroups.map((space) => {
+    const packageEntry = findPackage(space.packageId);
+    if (!packageEntry) return "";
+    rowIndex += 1;
+    return renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColumns);
+  }).join("");
+  const groupsHtml = regularGroups.map((space) => {
     const spaceLines = quoteItemsForProjectGroup(quote, space.id);
     if (!spaceLines.length) return "";
     const meta = [
@@ -4998,15 +5054,13 @@ function renderTotalsAndPreview() {
     return `
       <tr class="preview-space-row">
         <td></td>
-        <td colspan="${showAmountColumns ? 6 : 3}"><strong>${escapeHtml(projectGroupDisplayName(space))}</strong>${meta ? `<span>${escapeHtml(meta)}</span>` : ""}</td>
+        <td colspan="${showAmountColumns ? 5 : 3}"><strong>${escapeHtml(projectGroupDisplayName(space))}</strong>${meta ? `<span>${escapeHtml(meta)}</span>` : ""}</td>
       </tr>
       ${spaceLines.map((line) => {
     const item = findLaborItem(line.priceItemName, quote.priceVersionId);
     const selectedMaterial = findMaterial(line.materialId);
     const selectedKind = findGenericMaterial(line.materialKindId) || findGenericMaterial(selectedMaterial?.materialKindId);
     const unitPrice = calculateQuoteItemUnitPrice(line);
-    const displaySinglePrice = selectedMaterial ? materialUnitPriceForItem(selectedMaterial, item, "quote") : line.labor;
-    const displayAuxiliary = selectedMaterial ? 0 : line.auxiliary;
     const amount = toNumber(line.quantity) * unitPrice;
     const processNote = processNoteForQuoteItem(line, quote.priceVersionId);
     const lineTypeLabel = isMaterialQuoteItem(line) ? "装修主材" : "清工辅料";
@@ -5022,43 +5076,58 @@ function renderTotalsAndPreview() {
         <td>${formatNumber(line.quantity)}</td>
         <td>${escapeHtml(item?.unit || selectedMaterial?.unit || selectedKind?.unit || "")}</td>
         ${showAmountColumns ? `
-        <td>${formatMoney(displayAuxiliary)}</td>
-        <td>${formatMoney(displaySinglePrice)}</td>
+        <td>${formatMoney(unitPrice)}</td>
         <td>${formatMoney(amount)}</td>
         ` : ""}
       </tr>
       ${processNote ? `
       <tr class="preview-note-row">
         <td></td>
-        <td colspan="${showAmountColumns ? 6 : 3}"><span>工艺说明</span>${escapeHtml(processNote)}</td>
+        <td colspan="${showAmountColumns ? 5 : 3}"><span>工艺说明</span>${escapeHtml(processNote)}</td>
       </tr>
       ` : ""}
     `;
       }).join("")}
     `;
   }).join("");
+  els.previewRows.innerHTML = packageHtml + groupsHtml;
 }
 
 function renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColumns) {
-  const colspan = showAmountColumns ? 6 : 3;
+  const colspan = showAmountColumns ? 6 : 4;
   const summary = packageQuoteSummary(packageEntry);
+  const buildingArea = toNumber(space.buildingArea);
+  const unitPricePerSqm = toNumber(space.unitPricePerSqm);
+  const packageTotal = buildingArea > 0 && unitPricePerSqm > 0 ? buildingArea * unitPricePerSqm : 0;
+  const packageName = space.name || packageEntry.name || "套餐";
   return `
-    <tr class="preview-space-row preview-package-row">
-      <td>${rowIndex}</td>
-      <td colspan="${colspan}"><strong>${escapeHtml(space.name || packageEntry.name)}</strong><span>套餐说明</span></td>
-    </tr>
-    <tr class="preview-package-detail-row">
-      <td></td>
+    ${summary.specialSections.length ? `
+    <tr class="preview-package-items-row">
       <td colspan="${colspan}">
-        <div class="preview-package-detail">
+        <div class="preview-package-items">
           ${summary.specialSections.map(({ section, items }) => `
             <section>
-              <strong>${escapeHtml(section.name)}</strong>
-              ${renderPreviewPackageItemList(items, "无特殊项目")}
+              <strong>套餐模板：${escapeHtml(section.name || section.originalTemplateName)}</strong>
+              ${renderPackageQuoteItemList(items, "无特殊项目")}
             </section>
           `).join("")}
         </div>
       </td>
+    </tr>
+    ` : ""}
+    <tr class="preview-space-row preview-package-section-row">
+      <td></td>
+      <td colspan="${showAmountColumns ? 5 : 3}"><strong>${escapeHtml(space.packageLabel || "套餐")}</strong></td>
+    </tr>
+    <tr class="preview-main-row preview-package-summary-row">
+      <td>${rowIndex}</td>
+      <td><strong>${escapeHtml(packageName)}</strong></td>
+      <td>${buildingArea > 0 ? formatNumber(buildingArea) : "—"}</td>
+      <td>${buildingArea > 0 ? "平米" : ""}</td>
+      ${showAmountColumns ? `
+      <td>${unitPricePerSqm > 0 ? formatMoney(unitPricePerSqm) : "—"}</td>
+      <td>${packageTotal > 0 ? formatMoney(packageTotal) : "—"}</td>
+      ` : ""}
     </tr>
   `;
 }
@@ -5078,8 +5147,7 @@ function renderPreviewTableHead(showAmountColumns = true) {
       <th>工程量</th>
       <th>单位</th>
       ${showAmountColumns ? `
-      <th>辅料</th>
-      <th>单价</th>
+      <th>综合单价</th>
       <th>金额</th>
       ` : ""}
     </tr>
@@ -5103,9 +5171,9 @@ function calculateTotals(quote = currentQuote()) {
     return sum + amount;
   }, 0);
   const subtotal = subtotals.laborSubtotal + subtotals.materialSubtotal + packageSubtotal;
-  const management = subtotal * toNumber(quote?.managementRate) / 100;
-  const design = subtotal * toNumber(quote?.designRate) / 100;
-  const tax = subtotal * toNumber(quote?.taxRate) / 100;
+  const management = quote?.includeManagementFee === false ? 0 : subtotal * toNumber(quote?.managementRate) / 100;
+  const design = quote?.includeDesignFee === false ? 0 : subtotal * toNumber(quote?.designRate) / 100;
+  const tax = quote?.includeTax === false ? 0 : subtotal * toNumber(quote?.taxRate) / 100;
   return {
     ...subtotals,
     packageSubtotal,
@@ -6053,10 +6121,10 @@ function renderPackageDetail(packageEntry) {
       <label>默认公式<input class="package-formula" type="text" value="${escapeHtml(packageEntry.quantityFormula)}"></label>
       <label class="wide">套餐说明<textarea class="package-description">${escapeHtml(packageEntry.description)}</textarea></label>
       <label class="wide">不含说明<textarea class="package-exclusion">${escapeHtml(packageEntry.exclusionNote)}</textarea></label>
-    </div>
-    <div class="package-action-row">
-      <span>删除套餐会同时删除它的套餐说明和成本测算。</span>
-      <button class="delete-package danger" type="button">删除套餐</button>
+      <div class="package-meta-delete">
+        <span>删除套餐会同时删除它的套餐说明和成本测算。</span>
+        <button class="delete-package danger" type="button">删除套餐</button>
+      </div>
     </div>
     <div class="package-tabs">
       <button class="package-tab ${activeTab === "description" ? "active" : ""}" type="button" data-package-tab="description">项目组合</button>
@@ -6100,15 +6168,25 @@ function renderPackageDetail(packageEntry) {
 function renderPackageSections(packageEntry) {
   const sections = (packageEntry.sections || []).slice().sort((a, b) => a.sortOrder - b.sortOrder);
   if (!sections.length) return `<p class="muted empty-line">暂无项目组合。</p>`;
+  const templateNames = (state.templates || []).map((t) => t.name).filter(Boolean);
+  const datalistId = `package-section-template-names-${packageEntry.id}`;
+  const datalistHtml = templateNames.length
+    ? `<datalist id="${datalistId}">${templateNames.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("")}</datalist>`
+    : "";
   return sections.map((section) => `
     <div class="package-section ${section.collapsed ? "collapsed" : ""}" data-section-id="${escapeHtml(section.id)}" draggable="true">
       <div class="package-section-head">
         <button class="package-section-drag expandable-drag-handle" type="button" title="点击展开/收缩，拖动分类排序" aria-label="点击展开或收缩，拖动分类排序" aria-expanded="${String(!section.collapsed)}">⋮⋮</button>
-        <input class="package-section-name" type="text" value="${escapeHtml(section.name)}">
+        <input class="package-section-name" type="text" value="${escapeHtml(section.name)}" placeholder="项目组合名称">
+        <label class="package-section-original-name" title="原始模板名称（可留空）">
+          <span>原名</span>
+          <input class="package-section-original-name-input" type="text" value="${escapeHtml(section.originalTemplateName || "")}" placeholder="原模板名（可留空）" list="${templateNames.length ? datalistId : ""}">
+        </label>
         <span class="package-section-count">${(section.items || []).length}</span>
         <button class="add-package-section-item ghost" type="button">添加项目</button>
         <button class="delete-package-section danger" type="button">删除分类</button>
       </div>
+      ${datalistHtml}
       ${section.collapsed ? "" : `
       <div class="package-section-table">
         <div class="package-section-row header">
@@ -6318,6 +6396,10 @@ function bindPackageSectionInputs(packageEntry) {
     if (!section) return;
     bindEditableObjectField(node, ".package-section-name", section, "name", {
       message: "已更新套餐说明",
+      save: (target, message) => savePackageSectionToServer(target, packageEntry, message)
+    });
+    bindEditableObjectField(node, ".package-section-original-name-input", section, "originalTemplateName", {
+      message: "已更新原模板名",
       save: (target, message) => savePackageSectionToServer(target, packageEntry, message)
     });
     node.querySelector(".add-package-section-item")?.addEventListener("click", () => addPackageSectionItem(section));
@@ -7112,6 +7194,7 @@ function importPackageSectionFromTemplate(packageEntry, template, sectionName) {
   packageEntry.sections.forEach((section) => { section.collapsed = true; });
   const section = normalizePackageSection({
     name: uniquePackageSectionName(packageEntry, sectionName),
+    originalTemplateName: String(template?.name || "").trim(),
     sortOrder: packageEntry.sections.length,
     collapsed: false,
     items: sortedTemplateItems(template)

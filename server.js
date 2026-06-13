@@ -379,6 +379,7 @@ function initializeDatabase() {
       id TEXT PRIMARY KEY,
       package_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      original_template_name TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       collapsed INTEGER DEFAULT 0,
       FOREIGN KEY (package_id) REFERENCES packages(id) ON DELETE CASCADE
@@ -466,6 +467,9 @@ function initializeDatabase() {
       management_rate REAL DEFAULT 0,
       design_rate REAL DEFAULT 0,
       tax_rate REAL DEFAULT 0,
+      include_management_fee INTEGER DEFAULT 1,
+      include_design_fee INTEGER DEFAULT 1,
+      include_tax INTEGER DEFAULT 1,
       show_amount_columns INTEGER DEFAULT 1,
       FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
       FOREIGN KEY (price_version_id) REFERENCES price_versions(id)
@@ -476,6 +480,7 @@ function initializeDatabase() {
       quote_id TEXT NOT NULL,
       sort_order INTEGER NOT NULL,
       name TEXT NOT NULL,
+      package_label TEXT DEFAULT '套餐',
       type TEXT DEFAULT 'space',
       work_type TEXT DEFAULT 'labor',
       icon_key TEXT,
@@ -485,6 +490,7 @@ function initializeDatabase() {
       perimeter REAL DEFAULT 0,
       height REAL DEFAULT 0,
       building_area REAL DEFAULT 0,
+      unit_price_per_sqm REAL DEFAULT 0,
       collapsed INTEGER DEFAULT 0,
       FOREIGN KEY (quote_id) REFERENCES quotes(id) ON DELETE CASCADE
     );
@@ -515,6 +521,9 @@ function initializeDatabase() {
   ensureColumn("quotes", "client_phone", "TEXT");
   ensureColumn("quotes", "client_address", "TEXT");
   ensureColumn("quotes", "design_rate", "REAL DEFAULT 0");
+  ensureColumn("quotes", "include_management_fee", "INTEGER DEFAULT 1");
+  ensureColumn("quotes", "include_design_fee", "INTEGER DEFAULT 1");
+  ensureColumn("quotes", "include_tax", "INTEGER DEFAULT 1");
   ensureColumn("quotes", "show_amount_columns", "INTEGER DEFAULT 1");
   ensureColumn("quote_items", "project_group_id", "TEXT");
   ensureColumn("quote_items", "item_type", "TEXT DEFAULT 'labor'");
@@ -525,13 +534,16 @@ function initializeDatabase() {
   ensureColumn("quote_project_groups", "template_id", "TEXT");
   ensureColumn("quote_project_groups", "package_id", "TEXT");
   ensureColumn("quote_project_groups", "building_area", "REAL DEFAULT 0");
+  ensureColumn("quote_project_groups", "unit_price_per_sqm", "REAL DEFAULT 0");
   ensureColumn("quote_project_groups", "collapsed", "INTEGER DEFAULT 0");
+  ensureColumn("quote_project_groups", "package_label", "TEXT DEFAULT '套餐'");
   ensureColumn("project_group_templates", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("project_group_templates", "library_order_applied", "INTEGER DEFAULT 1");
   ensureColumn("packages", "quantity_formula", "TEXT");
   ensureColumn("packages", "collapsed", "INTEGER DEFAULT 0");
   ensureColumn("packages", "exclusion_note", "TEXT");
   ensureColumn("package_sections", "collapsed", "INTEGER DEFAULT 0");
+  ensureColumn("package_sections", "original_template_name", "TEXT");
   ensureColumn("package_section_items", "source_type", "TEXT DEFAULT 'labor'");
   ensureColumn("package_section_items", "item_name", "TEXT");
   ensureColumn("package_section_items", "material_id", "TEXT");
@@ -1278,17 +1290,19 @@ async function handlePatchPackageSection(req, res, id) {
     return;
   }
   db.prepare(`
-    INSERT INTO package_sections (id, package_id, name, sort_order, collapsed)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO package_sections (id, package_id, name, original_template_name, sort_order, collapsed)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       package_id = excluded.package_id,
       name = excluded.name,
+      original_template_name = excluded.original_template_name,
       sort_order = excluded.sort_order,
       collapsed = excluded.collapsed
   `).run(
     sectionId,
     packageId,
     name,
+    normalizedText(section.originalTemplateName),
     normalizedSortOrder(section, 0),
     sqliteBoolean(section.collapsed)
   );
@@ -1620,8 +1634,8 @@ async function handlePatchQuote(req, res, id) {
   db.prepare(`
     INSERT INTO quotes (
       id, customer_id, name, project_name, client_name, client_phone, client_address, quote_date,
-      price_version_id, management_rate, design_rate, tax_rate, show_amount_columns
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      price_version_id, management_rate, design_rate, tax_rate, include_management_fee, include_design_fee, include_tax, show_amount_columns
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       customer_id = excluded.customer_id,
       name = excluded.name,
@@ -1634,6 +1648,9 @@ async function handlePatchQuote(req, res, id) {
       management_rate = excluded.management_rate,
       design_rate = excluded.design_rate,
       tax_rate = excluded.tax_rate,
+      include_management_fee = excluded.include_management_fee,
+      include_design_fee = excluded.include_design_fee,
+      include_tax = excluded.include_tax,
       show_amount_columns = excluded.show_amount_columns
   `).run(
     quoteId,
@@ -1648,6 +1665,9 @@ async function handlePatchQuote(req, res, id) {
     toNumber(quote.managementRate),
     toNumber(quote.designRate),
     toNumber(quote.taxRate),
+    sqliteBoolean(quote.includeManagementFee !== false),
+    sqliteBoolean(quote.includeDesignFee !== false),
+    sqliteBoolean(quote.includeTax !== false),
     sqliteBoolean(quote.showAmountColumns !== false)
   );
   sendJson(res, 200, { ok: true });
@@ -1675,12 +1695,13 @@ async function handlePatchProjectGroup(req, res, id) {
   }
   db.prepare(`
     INSERT INTO quote_project_groups (
-      id, quote_id, sort_order, name, type, work_type, icon_key, template_id, package_id, area, perimeter, height, building_area, collapsed
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, quote_id, sort_order, name, package_label, type, work_type, icon_key, template_id, package_id, area, perimeter, height, building_area, unit_price_per_sqm, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       quote_id = excluded.quote_id,
       sort_order = excluded.sort_order,
       name = excluded.name,
+      package_label = excluded.package_label,
       type = excluded.type,
       work_type = excluded.work_type,
       icon_key = excluded.icon_key,
@@ -1690,12 +1711,14 @@ async function handlePatchProjectGroup(req, res, id) {
       perimeter = excluded.perimeter,
       height = excluded.height,
       building_area = excluded.building_area,
+      unit_price_per_sqm = excluded.unit_price_per_sqm,
       collapsed = excluded.collapsed
   `).run(
     groupId,
     quoteId,
     normalizedSortOrder(group, 0),
     name,
+    normalizedText(group.packageLabel) || "套餐",
     group.type === "package" ? "package" : (group.type === "overall" ? "overall" : "space"),
     group.workType === "material" ? "material" : "labor",
     normalizedText(group.iconKey),
@@ -1705,6 +1728,7 @@ async function handlePatchProjectGroup(req, res, id) {
     toNumber(group.perimeter),
     toNumber(group.height),
     toNumber(group.buildingArea),
+    toNumber(group.unitPricePerSqm),
     sqliteBoolean(group.collapsed)
   );
   sendJson(res, 200, { ok: true });
@@ -2142,7 +2166,7 @@ function loadPackages() {
     ORDER BY sort_order, rowid
   `).all();
   const sections = db.prepare(`
-    SELECT id, name, sort_order AS sortOrder, collapsed
+    SELECT id, name, original_template_name AS originalTemplateName, sort_order AS sortOrder, collapsed
     FROM package_sections
     WHERE package_id = ?
     ORDER BY sort_order, rowid
@@ -2223,12 +2247,13 @@ function loadQuotes() {
       quote_date AS quoteDate,
       price_version_id AS priceVersionId,
       management_rate AS managementRate, design_rate AS designRate, tax_rate AS taxRate,
+      include_management_fee AS includeManagementFee, include_design_fee AS includeDesignFee, include_tax AS includeTax,
       show_amount_columns AS showAmountColumns
     FROM quotes
     ORDER BY rowid
   `).all();
   const spaces = db.prepare(`
-    SELECT id, name, type, work_type AS workType, icon_key AS iconKey, template_id AS templateId, package_id AS packageId, area, perimeter, height, building_area AS buildingArea, collapsed, sort_order AS sortOrder
+    SELECT id, name, package_label AS packageLabel, type, work_type AS workType, icon_key AS iconKey, template_id AS templateId, package_id AS packageId, area, perimeter, height, building_area AS buildingArea, unit_price_per_sqm AS unitPricePerSqm, collapsed, sort_order AS sortOrder
     FROM quote_project_groups
     WHERE quote_id = ?
     ORDER BY sort_order
@@ -2490,8 +2515,8 @@ function insertPackages(packages) {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertSection = db.prepare(`
-    INSERT INTO package_sections (id, package_id, name, sort_order, collapsed)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO package_sections (id, package_id, name, original_template_name, sort_order, collapsed)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
   const insertSectionItem = db.prepare(`
     INSERT INTO package_section_items (
@@ -2541,6 +2566,7 @@ function insertPackages(packages) {
         sectionId,
         packageId,
         sectionName,
+        normalizedText(section?.originalTemplateName),
         normalizedSortOrder(section, sectionIndex),
         sqliteBoolean(section?.collapsed)
       );
@@ -2639,8 +2665,8 @@ function insertQuotes(quotes) {
   const insertQuote = db.prepare(`
     INSERT INTO quotes (
       id, customer_id, name, project_name, client_name, client_phone, client_address, quote_date,
-      price_version_id, management_rate, design_rate, tax_rate, show_amount_columns
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      price_version_id, management_rate, design_rate, tax_rate, include_management_fee, include_design_fee, include_tax, show_amount_columns
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertLine = db.prepare(`
     INSERT INTO quote_items (
@@ -2650,8 +2676,8 @@ function insertQuotes(quotes) {
   `);
   const insertSpace = db.prepare(`
     INSERT INTO quote_project_groups (
-      id, quote_id, sort_order, name, type, work_type, icon_key, template_id, package_id, area, perimeter, height, building_area, collapsed
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, quote_id, sort_order, name, package_label, type, work_type, icon_key, template_id, package_id, area, perimeter, height, building_area, unit_price_per_sqm, collapsed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   quotes.forEach((quote) => {
     insertQuote.run(
@@ -2667,6 +2693,9 @@ function insertQuotes(quotes) {
       toNumber(quote.managementRate),
       toNumber(quote.designRate),
       toNumber(quote.taxRate),
+      sqliteBoolean(quote.includeManagementFee !== false),
+      sqliteBoolean(quote.includeDesignFee !== false),
+      sqliteBoolean(quote.includeTax !== false),
       sqliteBoolean(quote.showAmountColumns !== false)
     );
     (quote.spaces || []).forEach((space, index) => {
@@ -2675,6 +2704,7 @@ function insertQuotes(quotes) {
         quote.id,
         normalizedSortOrder(space, index),
         space.name || "全屋",
+        normalizedText(space.packageLabel) || "套餐",
         space.type === "package" ? "package" : (space.type === "overall" ? "overall" : "space"),
         space.workType === "material" ? "material" : "labor",
         normalizedText(space.iconKey),
@@ -2684,6 +2714,7 @@ function insertQuotes(quotes) {
         toNumber(space.perimeter),
         toNumber(space.height),
         toNumber(space.buildingArea),
+        toNumber(space.unitPricePerSqm),
         sqliteBoolean(space.collapsed)
       );
     });

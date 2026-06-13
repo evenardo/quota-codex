@@ -1003,12 +1003,12 @@ test("renders preview table head with and without amount columns", () => {
   setFrontendState(app, "els.previewTableHead = previewHead;");
 
   app.renderPreviewTableHead(true);
-  assert.equal(head.innerHTML.includes("\u8f85\u6599"), true);
+  assert.equal(head.innerHTML.includes("\u7efc\u5408\u5355\u4ef7"), true);
   assert.equal(head.innerHTML.includes("\u91d1\u989d"), true);
   assert.deepEqual(table.toggles.at(-1), ["amount-hidden", false]);
 
   app.renderPreviewTableHead(false);
-  assert.equal(head.innerHTML.includes("\u8f85\u6599"), false);
+  assert.equal(head.innerHTML.includes("\u7efc\u5408\u5355\u4ef7"), false);
   assert.equal(head.innerHTML.includes("\u91d1\u989d"), false);
   assert.deepEqual(table.toggles.at(-1), ["amount-hidden", true]);
 });

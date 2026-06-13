@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -290,6 +290,7 @@ function inspectSqliteDatabase(dataDir) {
         area,
         perimeter,
         height,
+        unit_price_per_sqm AS unitPricePerSqm,
         collapsed,
         sort_order AS sortOrder
       FROM quote_project_groups
@@ -819,6 +820,7 @@ test("backend patch APIs update quote headers and project groups without rewriti
       area: 22,
       perimeter: 18,
       height: 2.9,
+      unitPricePerSqm: 450,
       collapsed: true,
       sortOrder: 0
     })
@@ -841,6 +843,7 @@ test("backend patch APIs update quote headers and project groups without rewriti
   assert.equal(after.packageGroup.packageId, "package-test");
   assert.equal(after.group.area, 22);
   assert.equal(after.group.height, 2.9);
+  assert.equal(after.group.unitPricePerSqm, 450);
   assert.equal(after.group.collapsed, 1);
   assert.equal(after.line.engineeringName, before.line.engineeringName);
   assert.equal(after.line.quantity, before.line.quantity);

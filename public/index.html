@@ -70,23 +70,33 @@
             <select id="priceVersion"></select>
           </div>
           <div class="field compact">
-            <label for="managementRate">管理费</label>
+            <label class="rate-with-toggle" for="managementRate">
+              <input id="includeManagementFee" type="checkbox" checked>
+              <span>管理费</span>
+            </label>
             <input id="managementRate" type="number" min="0" step="0.1" value="8">
           </div>
           <div class="field compact">
-            <label for="designRate">设计费</label>
+            <label class="rate-with-toggle" for="designRate">
+              <input id="includeDesignFee" type="checkbox" checked>
+              <span>设计费</span>
+            </label>
             <input id="designRate" type="number" min="0" step="0.1" value="6">
           </div>
           <div class="field compact">
-            <label for="taxRate">税金</label>
+            <label class="rate-with-toggle" for="taxRate">
+              <input id="includeTax" type="checkbox" checked>
+              <span>税金</span>
+            </label>
             <input id="taxRate" type="number" min="0" step="0.1" value="9">
           </div>
           <div class="totals">
+            <div id="packageSubtotalRow" hidden><span>套餐部分小计</span><strong id="packageSubtotalText">¥0.00</strong></div>
             <div><span>清工辅料小计</span><strong id="laborSubtotalText">¥0.00</strong></div>
             <div><span>装修主材小计</span><strong id="materialSubtotalText">¥0.00</strong></div>
-            <div><span>管理费</span><strong id="managementText">¥0.00</strong></div>
-            <div><span>设计费</span><strong id="designText">¥0.00</strong></div>
-            <div><span>税金</span><strong id="taxText">¥0.00</strong></div>
+            <div id="managementRow"><span>管理费</span><strong id="managementText">¥0.00</strong></div>
+            <div id="designRow"><span>设计费</span><strong id="designText">¥0.00</strong></div>
+            <div id="taxRow"><span>税金</span><strong id="taxText">¥0.00</strong></div>
             <div class="grand"><span>总额</span><strong id="grandTotalText">¥0.00</strong></div>
           </div>
         </section>
@@ -104,6 +114,10 @@
         </section>
 
         <section class="print-area" id="quotePreview">
+          <div class="section-title print-area-title">
+            <h2>报价单视图</h2>
+            <p class="muted">按最终报价单的样式展示工程量，导出 PDF 时会使用同一份内容。</p>
+          </div>
           <div class="quote-paper">
             <div class="quote-head">
               <div>
@@ -127,11 +141,12 @@
               <tbody id="previewRows"></tbody>
             </table>
             <div class="preview-summary">
+              <div id="previewPackageSubtotalRow" hidden><span>套餐部分小计</span><strong id="previewPackageSubtotal">¥0.00</strong></div>
               <div><span>清工辅料小计</span><strong id="previewLaborSubtotal">¥0.00</strong></div>
               <div><span>装修主材小计</span><strong id="previewMaterialSubtotal">¥0.00</strong></div>
-              <div><span>项目管理费</span><strong id="previewManagement">¥0.00</strong></div>
-              <div><span>设计费</span><strong id="previewDesign">¥0.00</strong></div>
-              <div><span>税金</span><strong id="previewTax">¥0.00</strong></div>
+              <div id="previewManagementRow"><span>管理费</span><strong id="previewManagement">¥0.00</strong></div>
+              <div id="previewDesignRow"><span>设计费</span><strong id="previewDesign">¥0.00</strong></div>
+              <div id="previewTaxRow"><span>税金</span><strong id="previewTax">¥0.00</strong></div>
               <div><span>报价总额</span><strong id="previewGrand">¥0.00</strong></div>
             </div>
           </div>
