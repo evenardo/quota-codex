@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "npm@11.6.2",
   "scripts": {
-    "dev": "nodemon --watch server.js --watch server-types.js --watch public --ext js,css,html,json server.js",
+    "dev": "node server.js",
     "start": "node server.js",
     "test": "npm run test:unit && npm run check",
     "test:unit": "node --test scripts/frontend.test.js scripts/backend.test.js",
@@ -15,8 +15,5 @@
   },
   "engines": {
     "node": ">=20"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.14"
   }
 }
