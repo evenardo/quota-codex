@@ -1020,7 +1020,8 @@ test("renders quote package summaries as common and section-specific text", () =
     name: "Base package",
     sections: [{
       id: "section-living",
-      name: "Living",
+      name: "Living renamed",
+      originalTemplateName: "Living template",
       sortOrder: 0,
       items: [
         { sourceType: "labor", name: "Base clean/m2", itemName: "Base clean/m2", sortOrder: 0 },
@@ -1028,7 +1029,8 @@ test("renders quote package summaries as common and section-specific text", () =
       ]
     }, {
       id: "section-bed",
-      name: "Bedroom",
+      name: "Bedroom renamed",
+      originalTemplateName: "Bedroom template",
       sortOrder: 1,
       items: [
         { sourceType: "labor", name: "Base clean/m2", itemName: "Base clean/m2", sortOrder: 0 },
@@ -1047,7 +1049,7 @@ test("renders quote package summaries as common and section-specific text", () =
 
   assert.deepEqual(
     plain(summary.specialSections.map((entry) => entry.section.name)),
-    ["Living", "Bedroom"]
+    ["Living renamed", "Bedroom renamed"]
   );
   assert.deepEqual(
     plain(summary.specialSections.map((entry) => entry.items.map((item) => item.itemName))),
@@ -1058,6 +1060,12 @@ test("renders quote package summaries as common and section-specific text", () =
   );
   assert.match(html, /Living feature\/m/);
   assert.match(html, /Bedroom feature\/m/);
+  assert.match(html, /Living renamed/);
+  assert.match(html, /Bedroom renamed/);
+  assert.doesNotMatch(html, /\u9879\u76ee\u7ec4/);
+  assert.doesNotMatch(html, /\u5957\u9910\u6a21\u677f/);
+  assert.doesNotMatch(html, /Living template/);
+  assert.doesNotMatch(html, /Bedroom template/);
   assert.doesNotMatch(html, /共有项目/);
   assert.doesNotMatch(html, /单价|金额|工程量/);
 });

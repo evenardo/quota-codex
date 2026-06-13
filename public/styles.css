@@ -3524,12 +3524,30 @@ td:nth-child(1) { width: 48px; text-align: center; }
   border-top: 1px dashed #e3d7c5;
 }
 
+.preview-package-items > section {
+  display: grid;
+  grid-template-columns:
+    minmax(56px, .5fr)
+    minmax(140px, 1.2fr)
+    minmax(120px, 1.4fr)
+    minmax(220px, 2.4fr);
+  gap: 5px 6px;
+}
+
 .preview-package-items > section > strong {
   display: block;
-  color: var(--accent-strong);
+  grid-column: 2 / -1;
+  color: #004d43;
   margin-bottom: 6px;
-  font-size: 14px;
+  padding-left: 14px;
+  font-size: 17px;
+  font-weight: 800;
   letter-spacing: 0;
+  text-align: left;
+}
+
+.preview-package-items > section > .package-quote-item-list {
+  grid-column: 1 / -1;
 }
 
 @media print {

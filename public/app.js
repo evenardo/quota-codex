@@ -10,7 +10,7 @@
 
 const STORAGE_KEY = "quote-tool-state-v2";
 const OLD_STORAGE_KEY = "quote-tool-state-v1";
-const APP_BUILD = "20260611-0022";
+const APP_BUILD = "20260611-0028";
 const DEFAULT_MANAGEMENT_RATE = 8;
 const DEFAULT_DESIGN_RATE = 6;
 const DEFAULT_TAX_RATE = 9;
@@ -1713,6 +1713,10 @@ function packageQuoteSummary(packageEntry) {
   return { packageEntry, sections, specialSections };
 }
 
+function packageSectionQuoteName(section) {
+  return section?.name || "";
+}
+
 function packageSectionItemQuoteLabel(item) {
   const name = packageSectionItemDisplayName(item) || item.itemName || item.name || "";
   const part = normalizeName(item.area || item.provider);
@@ -1726,7 +1730,7 @@ function renderPackageQuoteSummary(packageEntry) {
     <div class="package-quote-summary">
       ${summary.specialSections.map(({ section, items }) => `
         <div>
-          <strong>${escapeHtml(section.name)}</strong>
+          <strong>${escapeHtml(packageSectionQuoteName(section))}</strong>
           ${renderPackageQuoteItemList(items, "无特殊项目")}
         </div>
       `).join("")}
@@ -5107,7 +5111,7 @@ function renderPackagePreviewRows(space, packageEntry, rowIndex, showAmountColum
         <div class="preview-package-items">
           ${summary.specialSections.map(({ section, items }) => `
             <section>
-              <strong>套餐模板：${escapeHtml(section.name || section.originalTemplateName)}</strong>
+              <strong>${escapeHtml(packageSectionQuoteName(section))}</strong>
               ${renderPackageQuoteItemList(items, "无特殊项目")}
             </section>
           `).join("")}
